@@ -7,3 +7,6 @@ coverage/
 .vite/
 .tmp/
 *.local
+
+# Personal per-clone notes for Claude (not shared; the *.local glob doesn't match *.local.md)
+CLAUDE.local.md
