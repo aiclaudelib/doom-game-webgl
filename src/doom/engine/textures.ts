@@ -601,8 +601,15 @@ function buildEnemies(rng: Rng): Readonly<Record<EnemyKind, EnemyVisual>> {
 // First-person weapons — bottom-centre anchored, transparent background
 // ─────────────────────────────────────────────────────────────────────────────
 
-const WEAPON_W = 96
-const WEAPON_H = 72
+// Drawn in first person: a gloved hand + forearm rises from the BOTTOM edge of the
+// canvas (nearest the player) gripping the weapon, and the gun recedes UP-AND-AWAY
+// with a stepped taper — the muzzle ends up small and HIGH (far), while the receiver
+// and the gripping hand are large and LOW (near). The forearm/fist deliberately
+// dominate the lower third so the "I am holding this" read is unmistakable.
+// Coordinate system: high y = near / low-on-screen (hands), low y = far / high-on-
+// screen (muzzle). W*2 = 280 <= 320 wide and H*2 = 160 fills VIEW_H exactly (no clip).
+const WEAPON_W = 140
+const WEAPON_H = 80
 
 /** Shared metallic body builder: a rounded box with a top highlight + bottom shade. */
 function gunBody(tex: Texture, x: number, y: number, w: number, h: number, base: Rgb): void {
@@ -613,11 +620,128 @@ function gunBody(tex: Texture, x: number, y: number, w: number, h: number, base:
   vline(tex, x + w - 1, y, h, shade(base, 0.6))
 }
 
-/** Muzzle flash blob, drawn only on fire frames. */
+/**
+ * Muzzle flash blob, drawn only on fire frames. IMPORTANT: blitTexture culls every
+ * texel with alpha < 128 and setTexel OVERWRITES (no compositing), so the hot core
+ * MUST be drawn LAST at full opacity and the coloured rings kept at alpha >= 128 —
+ * otherwise the flash is silently dropped at blit time. Largest → smallest, opaque.
+ */
 function muzzleFlash(tex: Texture, cx: number, cy: number, r: number): void {
-  disc(tex, cx, cy, r, pal('yellow'))
-  disc(tex, cx, cy, r * 0.6, pal('white'))
-  disc(tex, cx, cy, r * 1.3, pal('orange'), 120)
+  disc(tex, cx, cy, r * 1.25, pal('orange'), 200) // outer corona (opaque enough to land)
+  disc(tex, cx, cy, r, pal('yellow')) // bright body
+  disc(tex, cx, cy, r * 0.55, pal('white')) // hot core drawn LAST, fully opaque
+}
+
+// ── First-person hand + foreshortening helpers ───────────────────────────────
+// Every weapon roots its arm at the very bottom edge so the model belongs to the
+// player. Foreshortening is faked with stacked 1px rows: parts are WIDEST + LOWEST
+// near the viewer (high y) and narrow + recede as they rise (low y).
+
+/**
+ * A foreshortened gloved forearm running from the very bottom edge of the canvas up
+ * to wrist height `topY`, centred on `cx`. Widest at the bottom (nearest the viewer),
+ * tapering to `topW` at the wrist via width-stepped horizontal lines, with a lit left
+ * rim, a shaded right rim and two leather cuff straps near the wrist.
+ */
+function forearm(
+  tex: Texture,
+  cx: number,
+  topY: number,
+  botW: number,
+  topW: number,
+  base: Rgb,
+): void {
+  const botY = WEAPON_H // run off the bottom edge → no gap up to the HUD bar
+  const span = Math.max(1, botY - topY)
+  const hi = shade(base, 1.25)
+  const lo = shade(base, 0.6)
+  for (let py = topY; py < botY; py++) {
+    const t = (py - topY) / span // 0 at wrist (far), 1 at the bottom (near)
+    const w = Math.round(topW + (botW - topW) * t)
+    const x = Math.round(cx - w / 2)
+    hline(tex, x, py, w, base)
+    hline(tex, x, py, 2, hi) // left rim catches light
+    hline(tex, x + w - 2, py, 2, lo) // right rim falls into shadow
+  }
+  // Two leather cuff straps wrapping the wrist/forearm.
+  for (let s = 0; s < 2; s++) {
+    const py = topY + 5 + s * 8
+    const t = (py - topY) / span
+    const w = Math.round(topW + (botW - topW) * t) + 2
+    const x = Math.round(cx - w / 2)
+    rect(tex, x, py, w, 3, shade(base, 0.5))
+    hline(tex, x, py, w, shade(base, 0.85))
+  }
+}
+
+/**
+ * A gloved fist / gripping hand centred at (cx,cy): a rounded knuckle mass with a lit
+ * highlight, four finger ridges across the top (the knuckles facing the muzzle) and a
+ * thumb wad on the leading side (`dir` = +1 right / -1 left). Used both as the hand
+ * that grips a gun and — for the fist weapon — as the punching knuckles themselves.
+ * All shading is opaque so nothing is dropped by the alpha-test blit, and the body
+ * rim is an ellipse (not a rect outline) so no square corner-ticks poke into the air.
+ */
+function glovedFist(
+  tex: Texture,
+  cx: number,
+  cy: number,
+  rw: number,
+  rh: number,
+  base: Rgb,
+  dir: number,
+): void {
+  const hi = shade(base, 1.25)
+  const lo = shade(base, 0.55)
+  // Palm / knuckle mass: a shaded ring (slightly larger ellipse) then the lit body.
+  ellipse(tex, cx, cy, rw + 1, rh + 1, lo)
+  ellipse(tex, cx, cy, rw, rh, base)
+  ellipse(tex, cx - rw * 0.35, cy - rh * 0.2, rw * 0.55, rh * 0.6, hi)
+  ellipse(tex, cx + rw * 0.4, cy + rh * 0.35, rw * 0.45, rh * 0.45, lo) // under-curl shadow
+  // Four finger ridges across the top (knuckles facing the muzzle direction).
+  const fw = (rw * 1.5) / 4
+  for (let i = 0; i < 4; i++) {
+    const fx = cx - rw * 0.72 + i * fw + fw / 2
+    disc(tex, fx, cy - rh * 0.7, fw * 0.55, base)
+    disc(tex, fx - 1, cy - rh * 0.78, fw * 0.3, hi)
+    vline(tex, Math.round(fx + fw / 2), Math.round(cy - rh * 0.9), Math.round(rh * 0.7), lo)
+  }
+  // Thumb wad wrapping the leading side of the grip.
+  ellipse(tex, cx + dir * rw * 0.95, cy + rh * 0.1, rw * 0.4, rh * 0.55, base)
+  ellipse(tex, cx + dir * rw * 0.95, cy + rh * 0.1, rw * 0.22, rh * 0.32, hi)
+}
+
+/**
+ * A stepped tapering barrel / gun body running upward from the near end (botY, wide)
+ * to the far muzzle (topY, narrow) centred on `cx`. Width shrinks with height to fake
+ * perspective; a bright central spine sells the cylindrical tube. Returns the muzzle
+ * centre {mx,my} so callers can cap it and place flashes exactly at the far end.
+ */
+function taperBarrel(
+  tex: Texture,
+  cx: number,
+  topY: number,
+  botY: number,
+  botW: number,
+  topW: number,
+  base: Rgb,
+): { mx: number; my: number } {
+  const span = Math.max(1, botY - topY)
+  const hi = shade(base, 1.4)
+  const lo = shade(base, 0.5)
+  for (let py = topY; py < botY; py++) {
+    const t = (py - topY) / span // 0 at the muzzle (far), 1 at the near end
+    const w = Math.max(1, Math.round(topW + (botW - topW) * t))
+    const x = Math.round(cx - w / 2)
+    hline(tex, x, py, w, base)
+    if (w >= 3) {
+      vline(tex, x, py, 1, hi)
+      vline(tex, x + w - 1, py, 1, lo)
+    }
+  }
+  // Cylindrical spine highlight down the centre (opaque so it survives the blit).
+  vline(tex, Math.round(cx) - 1, topY, span, hi)
+  return { mx: Math.round(cx), my: topY }
 }
 
 type WeaponBuilder = (firing: boolean, recoil: number) => Texture
@@ -631,52 +755,70 @@ function makeWeapon(build: WeaponBuilder): WeaponVisual {
 
 function fistTexture(firing: boolean, recoil: number): Texture {
   const tex = createTexture(WEAPON_W, WEAPON_H)
-  const cx = WEAPON_W / 2
-  const y = WEAPON_H - 26 + (firing ? -recoil * 2 : recoil)
-  // A clenched fist + forearm rising from the bottom-right.
-  const skin = pal('lightGray')
-  const punch = firing ? 14 : 0
-  disc(tex, cx + 8, y - punch, 13, skin)
-  rect(tex, cx + 2, y - punch + 6, 28, 24, skin)
-  // Knuckle dimples.
+  const cx = WEAPON_W / 2 + 10 // brawler stance: fist cocked to the right
+  const glove = pal('brown')
+  // Punching thrust drives the whole arm UP-AND-AWAY (toward the far end) on fire.
+  const punch = firing ? recoil * 3 : 0
+  const wristY = WEAPON_H - 30 - punch
+  // Beefy gloved forearm anchored to the bottom edge — the dominant near element.
+  forearm(tex, cx - 4, wristY, 44, 30, glove)
+  // Clenched fist on top of the wrist, knuckles facing the muzzle direction.
+  const fy = wristY - 8
+  glovedFist(tex, cx, fy, 22, 18, glove, 1)
+  // Studded gauntlet plate across the knuckles for a meaner read.
+  rect(tex, cx - 18, fy - 7, 36, 4, shade(glove, 0.5))
   for (let i = 0; i < 4; i++) {
-    disc(tex, cx + 1 + i * 6, y - punch - 6, 2, shade(skin, 0.75))
+    disc(tex, cx - 14 + i * 9, fy - 13, 2, pal('steel'))
   }
-  outline(tex, cx + 2, y - punch + 6, 28, 24, shade(skin, 0.6))
   return tex
 }
 
 function pistolTexture(firing: boolean, recoil: number): Texture {
   const tex = createTexture(WEAPON_W, WEAPON_H)
   const cx = WEAPON_W / 2
-  const baseY = WEAPON_H - 4 + recoil
   const steel = pal('steel')
-  // Grip.
-  gunBody(tex, cx - 7, baseY - 30, 14, 30, pal('darkSteel'))
-  // Slide / body.
-  gunBody(tex, cx - 9, baseY - 40, 30, 12, steel)
-  // Barrel pointing up-away.
-  gunBody(tex, cx + 4, baseY - 44, 6, 8, shade(steel, 0.8))
-  if (firing) muzzleFlash(tex, cx + 7, baseY - 46, 8)
+  const glove = pal('darkGreen')
+  const lift = recoil // whole model kicks down toward the player as one unit
+  // Slide + receiver tapering up to a small, high muzzle (foreshortened).
+  gunBody(tex, cx - 12, 32 + lift, 26, 18, steel) // wide rear receiver (near-ish)
+  const m = taperBarrel(tex, cx, 14 + lift, 34 + lift, 14, 6, shade(steel, 0.85)) // slide → muzzle
+  rect(tex, cx + 8, 32 + lift, 5, 7, pal('darkSteel')) // hammer / rear sight nub
+  // Tiny muzzle cap at the far end (smallest, highest element).
+  disc(tex, m.mx, m.my, 3, pal('darkSteel'))
+  disc(tex, m.mx, m.my, 1, pal('black'))
+  // Gloved hand wrapping the grip — the NEAREST element, so it is the widest. Forearm
+  // and hand both ride `lift` so the grip never shears away from the gun.
+  const wristY = WEAPON_H - 24 + lift
+  forearm(tex, cx - 2, wristY, 46, 28, glove)
+  glovedFist(tex, cx - 1, wristY - 4, 21, 16, glove, -1)
+  ellipse(tex, cx - 11, wristY - 11, 4, 7, glove) // trigger finger curling up
+  if (firing) muzzleFlash(tex, m.mx, m.my, 9)
   return tex
 }
 
 function shotgunTexture(firing: boolean, recoil: number): Texture {
   const tex = createTexture(WEAPON_W, WEAPON_H)
   const cx = WEAPON_W / 2
-  const baseY = WEAPON_H - 2 + recoil * 1.5
   const wood = pal('brown')
   const steel = pal('darkSteel')
-  // Wooden stock/forend at bottom.
-  gunBody(tex, cx - 16, baseY - 22, 40, 20, wood)
-  // Twin barrels rising.
-  gunBody(tex, cx - 12, baseY - 48, 10, 28, steel)
-  gunBody(tex, cx + 2, baseY - 48, 10, 28, steel)
-  // Pump.
-  gunBody(tex, cx - 14, baseY - 30, 36, 8, shade(wood, 0.8))
+  const glove = pal('darkBrown')
+  const lift = Math.round(recoil * 1.5)
+  // Twin barrels: wide+low near pair converging narrower toward the high muzzle.
+  const mL = taperBarrel(tex, cx - 9, 14 + lift, 42 + lift, 12, 7, steel)
+  const mR = taperBarrel(tex, cx + 9, 14 + lift, 42 + lift, 12, 7, steel)
+  disc(tex, mL.mx, mL.my, 3, pal('black')) // muzzle bores (small, far)
+  disc(tex, mR.mx, mR.my, 3, pal('black'))
+  // Wooden receiver bridging the barrels just above the hand.
+  gunBody(tex, cx - 20, 40 + lift, 40, 16, wood)
+  hline(tex, cx - 20, 46 + lift, 40, shade(wood, 0.6))
+  gunBody(tex, cx - 16, 52 + lift, 32, 8, shade(wood, 0.85)) // pump the hand rides on
+  // Big gloved fist + forearm gripping the pump — dominates the foreground.
+  const wristY = WEAPON_H - 22 + lift
+  forearm(tex, cx + 4, wristY, 52, 34, glove)
+  glovedFist(tex, cx, wristY - 2, 25, 19, glove, 1)
   if (firing) {
-    muzzleFlash(tex, cx - 7, baseY - 50, 11)
-    muzzleFlash(tex, cx + 7, baseY - 50, 11)
+    muzzleFlash(tex, mL.mx, mL.my, 10)
+    muzzleFlash(tex, mR.mx, mR.my, 10)
   }
   return tex
 }
@@ -684,18 +826,38 @@ function shotgunTexture(firing: boolean, recoil: number): Texture {
 function chaingunTexture(firing: boolean, recoil: number): Texture {
   const tex = createTexture(WEAPON_W, WEAPON_H)
   const cx = WEAPON_W / 2
-  const baseY = WEAPON_H - 2 + recoil
   const steel = pal('steel')
-  // Receiver block.
-  gunBody(tex, cx - 18, baseY - 30, 40, 28, pal('darkSteel'))
-  // Rotating barrel cluster.
+  const glove = pal('darkGreen')
+  const lift = recoil // whole model kicks as a unit
+  // Rotating barrel cluster: five tightly-packed tubes converging toward a tight high
+  // muzzle ring. Central tubes read nearer/longer; outer ones recede (start higher).
   for (let i = -2; i <= 2; i++) {
-    gunBody(tex, cx + i * 6 - 2, baseY - 52, 5, 24, shade(steel, i === 0 ? 1.2 : 0.85))
+    const near = 2 - Math.abs(i)
+    taperBarrel(
+      tex,
+      cx + i * 6,
+      16 + lift + (2 - near) * 3,
+      40 + lift,
+      11,
+      6,
+      shade(steel, i === 0 ? 1.15 : 0.8),
+    )
   }
-  // Spin indicator dot (rotates with recoil phase so it looks alive when firing).
+  // Mid-length shroud band ties the tubes into one solid rotary mass (no comb gaps).
+  gunBody(tex, cx - 16, 30 + lift, 32, 6, pal('darkSteel'))
+  // Front muzzle hub: small + far + high, clearly the smallest element.
+  ellipse(tex, cx, 14 + lift, 11, 4, pal('darkSteel'))
+  ellipse(tex, cx, 14 + lift, 7, 2, pal('black'))
+  // Wide receiver housing just above the hand (near, large).
+  gunBody(tex, cx - 24, 40 + lift, 48, 18, pal('darkSteel'))
+  // Spin indicator dot rotating with recoil phase so the cluster looks alive on fire.
   const spin = (recoil * 1.4) % 5
-  disc(tex, cx - 9 + spin * 6, baseY - 40, 2, pal('yellow'))
-  if (firing) muzzleFlash(tex, cx, baseY - 54, 10)
+  disc(tex, cx - 12 + spin * 6, 48 + lift, 2, pal('yellow'))
+  // Gloved fist + forearm on the grip handle, rooted at the bottom edge.
+  const wristY = WEAPON_H - 22 + lift
+  forearm(tex, cx + 2, wristY, 50, 32, glove)
+  glovedFist(tex, cx, wristY - 2, 23, 18, glove, 1)
+  if (firing) muzzleFlash(tex, cx, 14 + lift, 10)
   return tex
 }
 
