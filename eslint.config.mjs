@@ -80,6 +80,7 @@ export default tseslint.config(
       'test-results/**',
       'coverage/**',
       'report/**',
+      '.tmp/**',
       'eslint.config.mjs',
     ],
   },

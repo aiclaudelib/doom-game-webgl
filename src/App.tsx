@@ -1,8 +1,6 @@
+import { DoomGame } from '~/doom/DoomGame'
+
+// React is only the host: the entire game — menu, HUD, and 3D world — is drawn inside the canvas.
 export default function App() {
-  return (
-    <main className="app">
-      <h1>It works 🎉</h1>
-      <p>Empty React app wired up with the doom-webgl toolchain.</p>
-    </main>
-  )
+  return <DoomGame />
 }
