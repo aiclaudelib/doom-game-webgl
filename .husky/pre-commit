@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+
+echo "🔧 Running pre-commit checks..."
+echo ""
+
+# 1. Biome — lint + format check
+echo "━━━ [1/3] Biome check ━━━"
+bun run biome || { echo "❌ Biome check failed. Run 'bun run biome:fix' to auto-fix."; exit 1; }
+echo ""
+
+# 2. TypeScript type check
+echo "━━━ [2/3] TypeScript check ━━━"
+bun run ts || { echo "❌ TypeScript check failed."; exit 1; }
+echo ""
+
+# 3. Copy-paste detection (jscpd) with report analysis
+echo "━━━ [3/3] Copy-paste detection ━━━"
+bash scripts/check-copies.sh || { echo "❌ Too many code duplicates. Refactor before committing."; exit 1; }
+echo ""
+
+echo "✅ All pre-commit checks passed."
