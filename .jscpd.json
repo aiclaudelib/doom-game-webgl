@@ -1,9 +1,0 @@
-{
-  "threshold": 0.1,
-  "reporters": ["console", "json"],
-  "output": "report/jscpd",
-  "ignore": [],
-  "format": ["typescript", "javascript", "tsx", "jsx"],
-  "minLines": 5,
-  "minTokens": 50
-}
