@@ -2,8 +2,8 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    branches: [master]      # любой push в master → пересборка и публикация
-  workflow_dispatch:        # + можно запускать вручную из вкладки Actions
+    branches: [master]      # any push to master → rebuild and publish
+  workflow_dispatch:        # + can also be triggered manually from the Actions tab
 
 permissions:
   contents: read
@@ -19,12 +19,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2          # в проекте bun.lock → собираем через bun
+      - uses: oven-sh/setup-bun@v2          # the project has bun.lock → build with bun
       - run: bun install --frozen-lockfile
       - run: bun run build                   # = tsc --noEmit && vite build → dist/
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: dist                         # папка со сборкой
+          path: dist                         # the build output folder
 
   deploy:
     needs: build
