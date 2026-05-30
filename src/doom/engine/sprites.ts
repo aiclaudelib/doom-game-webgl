@@ -4,7 +4,7 @@
 // a sprite's optional zOffset lifts it off the floor (e.g. fireballs).
 
 import type { Camera, DepthBuffer, Framebuffer, SpriteInstance } from '~/doom/types'
-import { CAMERA_PLANE_SCALE, VIEW_H, VIEW_W } from '~/doom/config'
+import { CAMERA_PLANE_SCALE, SPRITE_PX_PER_TILE, VIEW_H, VIEW_W } from '~/doom/config'
 import { fromAngle, rotate } from '~/doom/core/vec'
 import { paintColumn } from '~/doom/engine/framebuffer'
 
@@ -61,6 +61,51 @@ export function renderSprites(
 
     // Pixels per world tile at this depth — the shared projection scale.
     const projScale = VIEW_H / transformY
+
+    // Doom-offset path: authentic sprites carry pixel dimensions + leftoffset/topoffset,
+    // so we anchor by those offsets and scale in atlas pixels (with optional mirror)
+    // instead of the legacy bottom-centre aspect-fit below.
+    if (sprite.pxH !== undefined && sprite.pxH > 0) {
+      const pixelScale = projScale / SPRITE_PX_PER_TILE
+      const pxW = sprite.pxW ?? tex.width
+      const pxH = sprite.pxH
+      const ox = sprite.ox ?? pxW / 2
+      const oy = sprite.oy ?? pxH
+      const spriteHeight = Math.max(1, Math.round(pxH * pixelScale))
+      const spriteWidth = Math.max(1, Math.round(pxW * pixelScale))
+      const zo = sprite.zOffset ?? 0
+      const groundY = horizon + projScale / 2 - zo * projScale
+      const left = Math.round(screenCenterX - ox * pixelScale)
+      const spanTop = groundY - oy * pixelScale
+      const drawStartY = Math.max(0, Math.ceil(spanTop))
+      const drawEndY = Math.min(VIEW_H - 1, Math.floor(spanTop + spriteHeight))
+      if (drawEndY < drawStartY) {
+        continue
+      }
+      const startX = Math.max(0, left)
+      const endX = Math.min(VIEW_W - 1, left + spriteWidth - 1)
+      if (endX < startX) {
+        continue
+      }
+      for (let sx = startX; sx <= endX; sx++) {
+        const wallDepth = depth[sx] ?? Number.POSITIVE_INFINITY
+        if (transformY >= wallDepth) {
+          continue
+        }
+        const localX = sx - left
+        let texX = Math.floor((localX / spriteWidth) * tex.width)
+        if (texX < 0) {
+          texX = 0
+        } else if (texX >= tex.width) {
+          texX = tex.width - 1
+        }
+        if (sprite.flip === true) {
+          texX = tex.width - 1 - texX
+        }
+        paintColumn(fb, sx, drawStartY, drawEndY, spanTop, spriteHeight, tex, texX, 1, true)
+      }
+      continue
+    }
 
     // Height comes from the projection/scale; width is derived from the texture aspect
     // ratio so non-square sprites (e.g. 48×56) are not horizontally stretched.

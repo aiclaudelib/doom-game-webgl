@@ -16,6 +16,11 @@ export const CAMERA_PLANE_SCALE = 0.66
 /** Procedural texture / flat dimensions (square, power of two). */
 export const TEXTURE_SIZE = 64
 
+/** Doom sprite pixels mapped to one world tile (tune later). */
+export const SPRITE_PX_PER_TILE = 48
+/** Manifest URL of the packed sprite atlas, relative to the deploy base. */
+export const SPRITE_ATLAS_PATH = 'sprites/atlas.json'
+
 /** Movement tuning — world tiles per second, radians per second. */
 export const MOVE_SPEED = 3.2
 export const STRAFE_SPEED = 2.8

@@ -542,6 +542,22 @@ const ENEMY_PALETTES: Readonly<Record<EnemyKind, EnemyPalette>> = {
     horns: false,
     bulky: false,
   },
+  shotgunGuy: {
+    body: pal('brown'),
+    bodyDark: shade(pal('brown'), 0.55),
+    limb: shade(pal('brown'), 0.75),
+    eye: pal('yellow'),
+    horns: false,
+    bulky: false,
+  },
+  chaingunner: {
+    body: pal('darkRed'),
+    bodyDark: shade(pal('darkRed'), 0.6),
+    limb: shade(pal('darkRed'), 0.8),
+    eye: pal('orange'),
+    horns: false,
+    bulky: false,
+  },
   imp: {
     body: pal('brown'),
     bodyDark: pal('darkBrown'),
@@ -557,6 +573,70 @@ const ENEMY_PALETTES: Readonly<Record<EnemyKind, EnemyPalette>> = {
     eye: pal('white'),
     horns: true,
     bulky: true,
+  },
+  spectre: {
+    body: shade(pal('darkSteel'), 0.7),
+    bodyDark: shade(pal('black'), 1.2),
+    limb: shade(pal('darkSteel'), 0.55),
+    eye: pal('cyan'),
+    horns: true,
+    bulky: true,
+  },
+  lostSoul: {
+    body: shade(pal('lightGray'), 1.05),
+    bodyDark: pal('gray'),
+    limb: pal('orange'),
+    eye: pal('red'),
+    horns: true,
+    bulky: false,
+  },
+  cacodemon: {
+    body: shade(pal('blue'), 0.85),
+    bodyDark: shade(pal('blue'), 0.5),
+    limb: shade(pal('blue'), 0.7),
+    eye: pal('red'),
+    horns: true,
+    bulky: true,
+  },
+  hellKnight: {
+    body: mix(pal('brown'), pal('lightGray'), 0.35),
+    bodyDark: pal('darkBrown'),
+    limb: shade(pal('brown'), 0.7),
+    eye: pal('green'),
+    horns: true,
+    bulky: true,
+  },
+  baron: {
+    body: mix(pal('brown'), pal('red'), 0.3),
+    bodyDark: shade(pal('darkRed'), 0.9),
+    limb: shade(pal('brown'), 0.6),
+    eye: pal('green'),
+    horns: true,
+    bulky: true,
+  },
+  mancubus: {
+    body: mix(pal('brown'), pal('orange'), 0.4),
+    bodyDark: pal('darkBrown'),
+    limb: shade(pal('orange'), 0.7),
+    eye: pal('yellow'),
+    horns: false,
+    bulky: true,
+  },
+  arachnotron: {
+    body: shade(pal('steel'), 0.9),
+    bodyDark: pal('darkSteel'),
+    limb: pal('darkRed'),
+    eye: pal('green'),
+    horns: false,
+    bulky: true,
+  },
+  revenant: {
+    body: shade(pal('white'), 0.95),
+    bodyDark: pal('lightGray'),
+    limb: pal('gray'),
+    eye: pal('orange'),
+    horns: false,
+    bulky: false,
   },
 }
 
@@ -589,12 +669,17 @@ function buildEnemy(ep: EnemyPalette, rng: Rng): EnemyVisual {
   return { walk, attack, hurt, die }
 }
 
+/**
+ * Build a visual for every kind by walking the palette table — one call per kind,
+ * no copied per-kind blocks. The kinds are visited in the table's declaration order
+ * so the seed stream stays deterministic across the whole roster.
+ */
 function buildEnemies(rng: Rng): Readonly<Record<EnemyKind, EnemyVisual>> {
-  return {
-    grunt: buildEnemy(ENEMY_PALETTES.grunt, rng),
-    imp: buildEnemy(ENEMY_PALETTES.imp, rng),
-    demon: buildEnemy(ENEMY_PALETTES.demon, rng),
+  const out = {} as Record<EnemyKind, EnemyVisual>
+  for (const kind of Object.keys(ENEMY_PALETTES) as EnemyKind[]) {
+    out[kind] = buildEnemy(ENEMY_PALETTES[kind], rng)
   }
+  return out
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

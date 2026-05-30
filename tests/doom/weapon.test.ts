@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Enemy, Rng, SceneQuery } from '~/doom/types'
 import { vec } from '~/doom/core/vec'
 import { createPlayer, giveWeapon } from '~/doom/game/player'
-import { spawnEnemy } from '~/doom/game/enemy'
+import { ENEMY_DEFS, spawnEnemy } from '~/doom/game/enemy'
 import { WEAPONS, tryFire, weaponBySlot } from '~/doom/game/weapon'
 
 function openScene(): SceneQuery {
@@ -69,8 +69,8 @@ describe('tryFire', () => {
     player.currentWeapon = 'shotgun'
     player.ammo.shells = 5
 
-    // A demon (80 hp) one tile ahead: every pellet lands within ENEMY_HIT_RADIUS,
-    // so total damage = 7 × shotgun damage, proving all pellets resolved.
+    // A demon one tile ahead: every pellet lands within ENEMY_HIT_RADIUS, so total
+    // damage = 7 × shotgun damage, proving all pellets resolved.
     const demon: Enemy = spawnEnemy('demon', 2.5, 1.5)
     const enemies: Enemy[] = [demon]
     const outcome = tryFire(player, openScene(), enemies, RNG)
@@ -79,6 +79,8 @@ describe('tryFire', () => {
     expect(outcome.soundKind).toBe('shotgun')
     expect(outcome.hitEnemy).toBe(true)
     expect(player.ammo.shells).toBe(4)
-    expect(demon.health).toBe(80 - WEAPONS.shotgun.pellets * WEAPONS.shotgun.damage)
+    expect(demon.health).toBe(
+      ENEMY_DEFS.demon.maxHealth - WEAPONS.shotgun.pellets * WEAPONS.shotgun.damage,
+    )
   })
 })

@@ -10,6 +10,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --port 4173 --strictPort",
     "deploy": "bash scripts/deploy-pages.sh",
+    "build:sprites": "bun scripts/build-sprites.ts",
     "ts": "tsc --noEmit",
     "lint": "eslint . --max-warnings 0 --no-warn-ignored",
     "lint:fix": "eslint . --fix --no-warn-ignored",

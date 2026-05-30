@@ -82,6 +82,7 @@ export default tseslint.config(
       'report/**',
       '.tmp/**',
       'eslint.config.mjs',
+      'scripts/**',
     ],
   },
 )

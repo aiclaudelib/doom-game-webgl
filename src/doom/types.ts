@@ -38,7 +38,20 @@ export type DepthBuffer = Float32Array
 
 export type WeaponKind = 'fist' | 'pistol' | 'shotgun' | 'chaingun'
 export type AmmoKind = 'bullets' | 'shells'
-export type EnemyKind = 'grunt' | 'imp' | 'demon'
+export type EnemyKind =
+  | 'grunt'
+  | 'shotgunGuy'
+  | 'chaingunner'
+  | 'imp'
+  | 'demon'
+  | 'spectre'
+  | 'lostSoul'
+  | 'cacodemon'
+  | 'hellKnight'
+  | 'baron'
+  | 'mancubus'
+  | 'arachnotron'
+  | 'revenant'
 export type EnemyStateName = 'idle' | 'chase' | 'attack' | 'hurt' | 'dying' | 'dead'
 export type ProjectileKind = 'fireball'
 export type KeyKind = 'red' | 'blue' | 'yellow'
@@ -176,7 +189,15 @@ export interface Camera {
   readonly angle: number
 }
 
-/** A billboarded world sprite to draw after walls, depth-tested against the wall buffer. */
+/**
+ * A billboarded world sprite to draw after walls, depth-tested against the wall buffer.
+ *
+ * Two anchoring modes coexist. When `pxH` is set the renderer uses Doom-offset
+ * anchoring (the `ox`/`oy` leftoffset/topoffset of an authentic sprite) plus the
+ * optional horizontal `flip`, sizing the billboard in atlas pixels. When `pxH` is
+ * absent the renderer falls back to the legacy bottom-centre, aspect-fit path driven
+ * by `scale`.
+ */
 export interface SpriteInstance {
   readonly texture: Texture
   readonly pos: Vec2
@@ -184,6 +205,16 @@ export interface SpriteInstance {
   readonly scale: number
   /** height above the floor in tiles (0 = floor-anchored) */
   readonly zOffset?: number
+  /** Mirror the sprite horizontally (Doom-offset path only). */
+  readonly flip?: boolean
+  /** Doom leftoffset in atlas pixels; defaults to half the frame width. */
+  readonly ox?: number
+  /** Doom topoffset in atlas pixels; defaults to the frame height (floor-anchored). */
+  readonly oy?: number
+  /** Frame width in atlas pixels; defaults to the texture width. */
+  readonly pxW?: number
+  /** Frame height in atlas pixels; presence selects the Doom-offset anchoring path. */
+  readonly pxH?: number
 }
 
 /** Presenter transform mapping render-buffer pixels onto the on-screen canvas. */
@@ -283,17 +314,38 @@ export interface WeaponDef {
   readonly slot: number // 1..4 selection key
 }
 
+/** How an enemy delivers damage; drives the AI dispatch in game/enemy.ts. */
+export type EnemyArchetype = 'melee' | 'hitscan' | 'projectile' | 'charger'
+
 export interface EnemyDef {
   readonly kind: EnemyKind
   readonly maxHealth: number
   readonly speed: number // tiles per second
   readonly radius: number
   readonly attackRange: number // tiles
-  readonly attackDamage: number
   readonly attackCooldown: number // seconds
-  readonly ranged: boolean // true = launches a projectile, false = melee/hitscan-close
   readonly painChance: number // 0..1 probability of flinching when hurt
   readonly scale: number // billboard size multiplier
+  readonly archetype: EnemyArchetype
+  /** Convenience flag = archetype === 'projectile'; kept so existing callers stay terse. */
+  readonly ranged: boolean
+  /** Ranged/hitscan/charge contact damage = (1 + floor(rng*damageSides)) * damageMul. */
+  readonly damageSides: number
+  readonly damageMul: number
+  /** Bullets per hitscan attack, or projectiles per volley (mancubus 6, else 1). */
+  readonly attackShots: number
+  /** Hybrid melee branch (imp/caco/revenant) when within meleeRange. */
+  readonly hasMelee?: boolean
+  readonly meleeSides?: number
+  readonly meleeMul?: number
+  readonly meleeRange?: number // cells; default config MELEE_RANGE
+  /** cells/s for projectile/charger spawn (charger = dash speed). */
+  readonly projectileSpeed?: number
+  /** float: render with a zOffset, altitude irrelevant on the 2D plane. */
+  readonly flying?: boolean
+  /** Spectre — render flag (fuzz shader lands in a later phase; ok to ignore visually now). */
+  readonly fuzz?: boolean
+  readonly reactionTics?: number
 }
 
 export interface Enemy {
@@ -306,6 +358,12 @@ export interface Enemy {
   animTimer: number // free-running animation clock
   attackTimer: number // cooldown until next attack is allowed
   alive: boolean // false once the death animation has finished (becomes a corpse)
+  /** Lost-soul charger: true while dashing toward the player along chargeVel. */
+  charging?: boolean
+  /** Lost-soul charge velocity (cells/s), set when a charge begins. */
+  chargeVel?: Vec2
+  /** Mancubus multi-shot index within the current volley. */
+  volleyShot?: number
 }
 
 export interface Projectile {

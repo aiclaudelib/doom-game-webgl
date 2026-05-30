@@ -64,10 +64,24 @@ const CHAR_TO_TILE: Readonly<Record<string, number>> = {
   Y: 9,
 }
 
+// Spawn chars for the full base roster. Chosen to avoid clashing with tile chars
+// (# = % D X * R B Y), the player (@) or pickup chars (h a m b s G C r u y):
+//   g grunt, S shotgunGuy, c chaingunner, i imp, d demon, p spectre, l lostSoul,
+//   k cacodemon, K hellKnight, n baron, f mancubus, A arachnotron, v revenant.
 const CHAR_TO_ENEMY: Readonly<Record<string, EnemyKind>> = {
   g: 'grunt',
+  S: 'shotgunGuy',
+  c: 'chaingunner',
   i: 'imp',
   d: 'demon',
+  p: 'spectre',
+  l: 'lostSoul',
+  k: 'cacodemon',
+  K: 'hellKnight',
+  n: 'baron',
+  f: 'mancubus',
+  A: 'arachnotron',
+  v: 'revenant',
 }
 
 const CHAR_TO_PICKUP: Readonly<Record<string, PickupKind>> = {

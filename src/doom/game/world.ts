@@ -38,6 +38,10 @@ import {
   tickPlayerTimers,
   updatePlayerMovement,
 } from '~/doom/game/player'
+import type { SpriteAtlas } from '~/doom/engine/sprites/spriteAtlas'
+import { spriteRotation } from '~/doom/engine/sprites/spriteAtlas'
+import { ACTOR_DEFS, resolveActorFrame } from '~/doom/game/actorDefs'
+import type { ActorPhase } from '~/doom/game/actorDefs'
 import { enemyDef, enemyFrame, spawnEnemy, updateEnemy } from '~/doom/game/enemy'
 import { projectileFrame, updateProjectile } from '~/doom/game/projectile'
 import { tryFire, updateWeapon, weaponBySlot, weaponDef } from '~/doom/game/weapon'
@@ -50,6 +54,8 @@ type DoorPhase = 'shut' | 'opening' | 'open' | 'closing'
 const PROJECTILE_SCALE = 0.4
 /** Height above the floor (in tiles) projectiles fly at, so they don't roll along it. */
 const PROJECTILE_Z_OFFSET = 0.4
+/** Height above the floor (in tiles) flying enemies (caco, lost soul) hover at. */
+const FLYING_Z_OFFSET = 0.6
 /** Fallback billboard scale for any pickup. */
 const PICKUP_SCALE = 0.55
 
@@ -99,6 +105,9 @@ export class World implements SceneQuery {
   private readonly totalEnemies: number
   private exited = false
 
+  /** Authentic sprite atlas, swapped in once loaded; null = procedural fallback. */
+  private spriteAtlas: SpriteAtlas | null = null
+
   constructor(level: Level, assets: Assets, rng: Rng, settings: Settings) {
     this.width = level.width
     this.height = level.height
@@ -132,6 +141,11 @@ export class World implements SceneQuery {
   /** Swap in the live Settings so movement reads current mouse-look + sensitivity. */
   setSettings(settings: Settings): void {
     this.settings = settings
+  }
+
+  /** Swap in (or clear) the authentic sprite atlas; null reverts to the procedural look. */
+  setSpriteAtlas(atlas: SpriteAtlas | null): void {
+    this.spriteAtlas = atlas
   }
 
   // ── SceneQuery ──────────────────────────────────────────────────────────────
@@ -469,10 +483,18 @@ export class World implements SceneQuery {
     const sprites: SpriteInstance[] = []
 
     for (const enemy of this.enemies) {
+      const atlasSprite = this.atlasEnemySprite(enemy)
+      if (atlasSprite !== null) {
+        sprites.push(atlasSprite)
+        continue
+      }
+      // Procedural fallback: bottom-centre billboard from the generated textures.
+      const fbDef = enemyDef(enemy.kind)
       sprites.push({
         texture: enemyFrame(enemy, this.assets),
         pos: { x: enemy.pos.x, y: enemy.pos.y },
-        scale: enemyDef(enemy.kind).scale,
+        scale: fbDef.scale,
+        ...(fbDef.flying === true ? { zOffset: FLYING_Z_OFFSET } : {}),
       })
     }
 
@@ -501,6 +523,80 @@ export class World implements SceneQuery {
 
     return sprites
   }
+
+  /**
+   * Build the atlas billboard for an enemy, or null when no atlas / actor / frame is
+   * available (the caller then falls back to the procedural texture). Maps the live
+   * enemy state onto an animation phase, resolves the Doom frame LETTER for the current
+   * clock, then asks the atlas for the rotation view facing the camera.
+   */
+  private atlasEnemySprite(enemy: Enemy): SpriteInstance | null {
+    const atlas = this.spriteAtlas
+    if (atlas === null) {
+      return null
+    }
+    const def = ACTOR_DEFS[enemy.kind]
+    if (!atlas.hasActor(def.sprite)) {
+      return null
+    }
+
+    const phase = enemyPhase(enemy)
+    // 'death' + 'corpse' advance off the free-running animTimer (reset to 0 on death,
+    // so death frames march forward); other phases also key off animTimer.
+    const clock = enemy.animTimer
+    const resolved = resolveActorFrame(def, phase, clock)
+
+    const camera = this.camera
+    const rot = spriteRotation(enemy.angle, camera.pos.x, camera.pos.y, enemy.pos.x, enemy.pos.y)
+    const ref = atlas.actorFrame(def.sprite, resolved.letter, rot)
+    if (ref === null) {
+      return null
+    }
+
+    return {
+      texture: ref.tex,
+      pos: { x: enemy.pos.x, y: enemy.pos.y },
+      scale: 1,
+      flip: ref.flip,
+      ox: ref.ox,
+      oy: ref.oy,
+      pxW: ref.tex.width,
+      pxH: ref.tex.height,
+      ...(enemyDef(enemy.kind).flying === true ? { zOffset: FLYING_Z_OFFSET } : {}),
+    }
+  }
+}
+
+/**
+ * Map an enemy's live state onto the actor-state animation phase. The attack pose
+ * is chosen by archetype: hitscan/projectile prefer a 'missile' seq (falling back
+ * to 'melee' when none exists, e.g. a pistol pose actor), while melee/charger use
+ * 'melee'. The resolver already falls back to 'see' for any missing seq.
+ */
+function enemyPhase(enemy: Enemy): ActorPhase {
+  switch (enemy.state) {
+    case 'dead':
+      return 'corpse'
+    case 'dying':
+      return 'death'
+    case 'hurt':
+      return 'pain'
+    case 'attack':
+      return attackPhase(enemy)
+    default:
+      // idle / chase share the walk (see) cycle.
+      return 'see'
+  }
+}
+
+/** Pick the attack-pose phase for an enemy by its archetype + available seqs. */
+function attackPhase(enemy: Enemy): ActorPhase {
+  const def = enemyDef(enemy.kind)
+  if (def.archetype === 'melee' || def.archetype === 'charger') {
+    return 'melee'
+  }
+  // hitscan / projectile: prefer the missile pose, else the melee pose.
+  return ACTOR_DEFS[enemy.kind].states.missile !== undefined ? 'missile' : 'melee'
 }
 
 /** Drop the dead projectiles, compacting in place to keep the array tight. */

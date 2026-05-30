@@ -10,3 +10,7 @@ coverage/
 
 # Personal per-clone notes for Claude (not shared; the *.local glob doesn't match *.local.md)
 CLAUDE.local.md
+
+# Raw Doom IWAD — build input only (BSD Freedoom). Re-downloaded by `bun run build:sprites`
+# if missing; never committed. The compact generated atlas (committed) is what ships.
+assets/*.wad

@@ -16,15 +16,20 @@ import { damagePlayer } from '~/doom/game/player'
 /** Animation cadence for the fireball spin, in seconds per frame. */
 const PROJECTILE_FRAME_TIME = 0.08
 
-/** Create a projectile whose velocity is the normalized direction × PROJECTILE_SPEED. */
+/**
+ * Create a projectile whose velocity is the normalized direction × `speed`
+ * (cells/s). `speed` defaults to PROJECTILE_SPEED so existing callers are
+ * unchanged; enemies pass their canonical missile speed.
+ */
 export function spawnProjectile(
   kind: ProjectileKind,
   pos: Vec2,
   dir: Vec2,
   damage: number,
   fromEnemy: boolean,
+  speed = PROJECTILE_SPEED,
 ): Projectile {
-  const vel = scale(normalize(dir), PROJECTILE_SPEED)
+  const vel = scale(normalize(dir), speed)
   return {
     kind,
     pos: { x: pos.x, y: pos.y },

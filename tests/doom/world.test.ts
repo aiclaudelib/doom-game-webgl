@@ -82,13 +82,16 @@ describe('World', () => {
 
   it('grabs a pickup the player walks onto', () => {
     const world = makeWorld()
-    // Spend the start at full health so the stimpack would be refused; take damage
-    // first so the health pickup is actually useful when stepped on.
+    // Below the cap so the stimpack heals (it would be refused at ≥100). The grunt
+    // down the corridor now hitscans the player while they walk, so compare against
+    // the health on the tick BEFORE the grab — proving the stimpack added on top.
     world.player.health = 40
 
     let grabbed = false
+    let healthBeforeGrab = world.player.health
     // Walk east toward the health pickup one tile away.
     for (let i = 0; i < 120 && !grabbed; i++) {
+      healthBeforeGrab = world.player.health
       const events = world.update(input({ moveForward: 1 }), 1 / 60)
       if (events.pickedUp) {
         grabbed = true
@@ -96,7 +99,8 @@ describe('World', () => {
     }
 
     expect(grabbed).toBe(true)
-    expect(world.player.health).toBeGreaterThan(40)
+    // The stimpack's +10 outweighs at most one hitscan hit on the grab tick.
+    expect(world.player.health).toBeGreaterThan(healthBeforeGrab)
   })
 
   it('reports reachedExit when the player stands beside the (solid) exit switch', () => {

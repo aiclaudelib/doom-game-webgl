@@ -6,7 +6,7 @@
 // Headless-safe: start() degrades to an idle no-op when no drawing context is available
 // (jsdom / no WebGL/2D), and every DOM/audio touch is guarded.
 
-import { MAX_HEALTH, RENDER_H, RENDER_W, VIEW_W } from '~/doom/config'
+import { MAX_HEALTH, RENDER_H, RENDER_W, SPRITE_ATLAS_PATH, VIEW_W } from '~/doom/config'
 import type {
   Assets,
   BindingAction,
@@ -28,6 +28,8 @@ import { GameLoop } from '~/doom/engine/loop'
 import { createPresenter } from '~/doom/engine/present'
 import { renderWorld } from '~/doom/engine/raycaster'
 import { renderSprites } from '~/doom/engine/sprites'
+import { loadAtlas } from '~/doom/engine/sprites/atlasLoader'
+import type { SpriteAtlas } from '~/doom/engine/sprites/spriteAtlas'
 import { createAssets } from '~/doom/engine/textures'
 import { compileLevel } from '~/doom/game/map'
 import { LEVELS } from '~/doom/game/levels'
@@ -62,6 +64,8 @@ export class DoomEngine {
   private readonly menuState: MenuState = { cursor: 0, rebinding: null, returnTo: null }
   private levelIndex = 0
   private world: World | null = null
+  /** Authentic sprite atlas, loaded asynchronously after start; null until ready. */
+  private spriteAtlas: SpriteAtlas | null = null
 
   private started = false
   private stopped = false
@@ -104,6 +108,18 @@ export class DoomEngine {
     this.inputManager.setViewport(this.presenter.viewport)
     this.loop.start()
     this.music.play('menu')
+
+    // Fire-and-forget the authentic sprite atlas load; the procedural look stays the
+    // full fallback until (and unless) it resolves. Failures degrade to null silently.
+    const base = import.meta.env.BASE_URL ?? '/'
+    void loadAtlas(`${base}${SPRITE_ATLAS_PATH}`)
+      .then(atlas => {
+        this.spriteAtlas = atlas
+        if (atlas !== null && this.world !== null) {
+          this.world.setSpriteAtlas(atlas)
+        }
+      })
+      .catch(() => undefined)
   }
 
   stop(): void {
@@ -312,6 +328,10 @@ export class DoomEngine {
     const level = compileLevel(source)
     const rng = mulberry32(WORLD_SEED + index)
     this.world = new World(level, this.assets, rng, this.settings)
+    // Newly built levels inherit the already-loaded atlas (if any).
+    if (this.spriteAtlas !== null) {
+      this.world.setSpriteAtlas(this.spriteAtlas)
+    }
   }
 
   private startNewGame(): void {

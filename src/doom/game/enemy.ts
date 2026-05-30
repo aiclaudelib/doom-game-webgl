@@ -1,4 +1,7 @@
-// Enemy tuning tables, spawning, the AI state machine, and frame selection.
+// Enemy tuning tables, spawning, the data-driven AI state machine, and frame
+// selection. ENEMY_DEFS holds canonical Doom tunings (see doomBehaviorSpec.md
+// §3.1): HP, painchance/256, cruise cells/s, damage dice, attack cadence. The
+// AI dispatches on the archetype (melee / hitscan / projectile / charger).
 
 import type {
   Assets,
@@ -12,9 +15,10 @@ import type {
   Texture,
   Vec2,
 } from '~/doom/types'
+import { MELEE_RANGE, PLAYER_RADIUS } from '~/doom/config'
 import { clamp, normalizeAngle } from '~/doom/core/math'
 import { chance, randRange } from '~/doom/core/rng'
-import { fromAngle, sub } from '~/doom/core/vec'
+import { fromAngle, normalize, scale, sub } from '~/doom/core/vec'
 import { lineOfSight } from '~/doom/game/combat'
 import { moveWithCollision } from '~/doom/game/collision'
 import { damagePlayer } from '~/doom/game/player'
@@ -28,48 +32,238 @@ const DYING_TIME = 0.6
 const ATTACK_POSE_TIME = 0.3
 /** Walk-cycle frame cadence (seconds per frame). */
 const WALK_FRAME_TIME = 0.18
-/** Damage dealt by an imp fireball. */
-const FIREBALL_DAMAGE = 12
-/** Half-angle (radians) of aim jitter applied to enemy attacks. */
+/** Half-angle (radians) of aim jitter applied to enemy attacks and chase wander. */
 const AIM_JITTER = 0.06
+/** Mancubus FATSPREAD: ANG90/8 = 11.25° between fan shots. */
+const FAT_SPREAD = Math.PI / 2 / 8
 
-/** Static tuning per enemy kind. */
+/**
+ * Static tuning per enemy kind, faithful to doomBehaviorSpec.md §3.1.
+ * speed = cells/s; painChance = painchance/256; damage = (1+floor(rng*sides))*mul.
+ * projectileSpeed = cells/s (= u/s ÷ 64). attackCooldown is a faithful cadence in s.
+ */
 export const ENEMY_DEFS: Readonly<Record<EnemyKind, EnemyDef>> = {
   grunt: {
     kind: 'grunt',
-    maxHealth: 30,
-    speed: 2.0,
-    radius: 0.3,
-    attackRange: 1.1,
-    attackDamage: 8,
+    maxHealth: 20,
+    speed: 1.09,
+    radius: 0.31,
+    attackRange: 12,
     attackCooldown: 1.0,
-    ranged: false,
-    painChance: 0.5,
+    painChance: 0.78,
     scale: 0.9,
+    archetype: 'hitscan',
+    ranged: false,
+    damageSides: 5,
+    damageMul: 3,
+    attackShots: 1,
+  },
+  shotgunGuy: {
+    kind: 'shotgunGuy',
+    maxHealth: 30,
+    speed: 1.46,
+    radius: 0.31,
+    attackRange: 12,
+    attackCooldown: 1.2,
+    painChance: 0.66,
+    scale: 0.92,
+    archetype: 'hitscan',
+    ranged: false,
+    damageSides: 5,
+    damageMul: 3,
+    attackShots: 3,
+  },
+  chaingunner: {
+    kind: 'chaingunner',
+    maxHealth: 70,
+    speed: 1.46,
+    radius: 0.31,
+    attackRange: 12,
+    attackCooldown: 0.45,
+    painChance: 0.66,
+    scale: 0.95,
+    archetype: 'hitscan',
+    ranged: false,
+    damageSides: 5,
+    damageMul: 3,
+    attackShots: 1,
   },
   imp: {
     kind: 'imp',
-    maxHealth: 45,
-    speed: 1.7,
-    radius: 0.32,
-    attackRange: 7.0,
-    attackDamage: FIREBALL_DAMAGE,
-    attackCooldown: 1.4,
-    ranged: true,
-    painChance: 0.4,
+    maxHealth: 60,
+    speed: 1.46,
+    radius: 0.31,
+    attackRange: 7,
+    attackCooldown: 1.2,
+    painChance: 0.78,
     scale: 1.0,
+    archetype: 'projectile',
+    ranged: true,
+    damageSides: 8,
+    damageMul: 3,
+    attackShots: 1,
+    hasMelee: true,
+    meleeSides: 8,
+    meleeMul: 3,
+    projectileSpeed: 5.47,
   },
   demon: {
     kind: 'demon',
-    maxHealth: 80,
-    speed: 2.6,
-    radius: 0.4,
+    maxHealth: 150,
+    speed: 2.73,
+    radius: 0.47,
     attackRange: 1.3,
-    attackDamage: 16,
-    attackCooldown: 1.2,
-    ranged: false,
-    painChance: 0.25,
+    attackCooldown: 1.0,
+    painChance: 0.7,
     scale: 1.15,
+    archetype: 'melee',
+    ranged: false,
+    damageSides: 10,
+    damageMul: 4,
+    attackShots: 1,
+  },
+  spectre: {
+    kind: 'spectre',
+    maxHealth: 150,
+    speed: 2.73,
+    radius: 0.47,
+    attackRange: 1.3,
+    attackCooldown: 1.0,
+    painChance: 0.7,
+    scale: 1.15,
+    archetype: 'melee',
+    ranged: false,
+    damageSides: 10,
+    damageMul: 4,
+    attackShots: 1,
+    fuzz: true,
+  },
+  lostSoul: {
+    kind: 'lostSoul',
+    maxHealth: 100,
+    speed: 0.73,
+    radius: 0.25,
+    attackRange: 12,
+    attackCooldown: 1.0,
+    painChance: 1.0,
+    scale: 0.8,
+    archetype: 'charger',
+    ranged: false,
+    damageSides: 8,
+    damageMul: 3,
+    attackShots: 1,
+    projectileSpeed: 10.94,
+    flying: true,
+  },
+  cacodemon: {
+    kind: 'cacodemon',
+    maxHealth: 400,
+    speed: 4.38,
+    radius: 0.48,
+    attackRange: 10,
+    attackCooldown: 1.0,
+    painChance: 0.5,
+    scale: 1.3,
+    archetype: 'projectile',
+    ranged: true,
+    damageSides: 8,
+    damageMul: 5,
+    attackShots: 1,
+    hasMelee: true,
+    meleeSides: 6,
+    meleeMul: 10,
+    projectileSpeed: 5.47,
+    flying: true,
+  },
+  hellKnight: {
+    kind: 'hellKnight',
+    maxHealth: 500,
+    speed: 4.38,
+    radius: 0.38,
+    attackRange: 12,
+    attackCooldown: 1.2,
+    painChance: 0.195,
+    scale: 1.35,
+    archetype: 'projectile',
+    ranged: true,
+    damageSides: 8,
+    damageMul: 8,
+    attackShots: 1,
+    hasMelee: true,
+    meleeSides: 8,
+    meleeMul: 10,
+    projectileSpeed: 8.2,
+  },
+  baron: {
+    kind: 'baron',
+    maxHealth: 1000,
+    speed: 4.38,
+    radius: 0.38,
+    attackRange: 12,
+    attackCooldown: 1.2,
+    painChance: 0.195,
+    scale: 1.4,
+    archetype: 'projectile',
+    ranged: true,
+    damageSides: 8,
+    damageMul: 8,
+    attackShots: 1,
+    hasMelee: true,
+    meleeSides: 8,
+    meleeMul: 10,
+    projectileSpeed: 8.2,
+  },
+  mancubus: {
+    kind: 'mancubus',
+    maxHealth: 600,
+    speed: 1.09,
+    radius: 0.75,
+    attackRange: 14,
+    attackCooldown: 1.5,
+    painChance: 0.3125,
+    scale: 1.4,
+    archetype: 'projectile',
+    ranged: true,
+    damageSides: 8,
+    damageMul: 8,
+    attackShots: 6,
+    projectileSpeed: 10.94,
+  },
+  arachnotron: {
+    kind: 'arachnotron',
+    maxHealth: 500,
+    speed: 2.19,
+    radius: 1.0,
+    attackRange: 14,
+    attackCooldown: 0.5,
+    painChance: 0.5,
+    scale: 1.4,
+    archetype: 'projectile',
+    ranged: true,
+    damageSides: 8,
+    damageMul: 5,
+    attackShots: 1,
+    projectileSpeed: 13.67,
+  },
+  revenant: {
+    kind: 'revenant',
+    maxHealth: 300,
+    speed: 2.73,
+    radius: 0.31,
+    attackRange: 12,
+    attackCooldown: 1.1,
+    painChance: 0.39,
+    scale: 1.2,
+    archetype: 'projectile',
+    ranged: true,
+    damageSides: 8,
+    damageMul: 10,
+    attackShots: 1,
+    hasMelee: true,
+    meleeSides: 10,
+    meleeMul: 6,
+    meleeRange: 3.0,
+    projectileSpeed: 5.47,
   },
 }
 
@@ -94,10 +288,16 @@ export function spawnEnemy(kind: EnemyKind, x: number, y: number): Enemy {
   }
 }
 
+/** Roll one damage value from the (sides, mul) dice: (1 + floor(rng*sides)) * mul. */
+function rollDamage(rng: Rng, sides: number, mul: number): number {
+  return (1 + Math.floor(rng() * sides)) * mul
+}
+
 /**
  * Advance one enemy by dt. Corpses hold; dying runs its timer then settles into
- * a corpse; hurt flinches briefly then chases. Otherwise the enemy chases the
- * player whenever it can see them, attacking when in range and off cooldown.
+ * a corpse; hurt flinches briefly then chases. A charging lost soul dashes along
+ * its chargeVel until it touches the player or a wall. Otherwise the enemy chases
+ * the player whenever it can see them, attacking when in range and off cooldown.
  */
 export function updateEnemy(
   enemy: Enemy,
@@ -122,6 +322,14 @@ export function updateEnemy(
       enemy.state = 'dead'
       enemy.alive = false
     }
+    return
+  }
+
+  // A charging lost soul keeps dashing even mid-flinch is not allowed: pain
+  // clears the charge below in damageEnemy. While charging, ignore the normal
+  // chase logic and run the dash.
+  if (enemy.charging === true) {
+    chargeStep(enemy, player, scene, rng)
     return
   }
 
@@ -161,13 +369,14 @@ export function updateEnemy(
   const distance = Math.hypot(toPlayer.x, toPlayer.y)
 
   if (distance <= def.attackRange && enemy.attackTimer <= 0) {
-    attack(enemy, player, projectiles, def, rng)
+    attack(enemy, player, scene, projectiles, def, rng, distance)
     return
   }
 
   // Chase: step toward the player, sliding along walls. A little angular wander
   // keeps the swarm from collapsing onto a single line into the player.
-  if (distance > def.attackRange * 0.6) {
+  const stopDistance = def.archetype === 'melee' ? def.attackRange * 0.6 : 1.2
+  if (distance > stopDistance) {
     const wander = randRange(rng, -AIM_JITTER, AIM_JITTER)
     const step = fromAngle(enemy.angle + wander, def.speed * dt)
     const moved = moveWithCollision(scene, enemy.pos, step, def.radius)
@@ -187,11 +396,16 @@ export function damageEnemy(enemy: Enemy, amount: number, rng: Rng): void {
     enemy.state = 'dying'
     enemy.stateTimer = DYING_TIME
     enemy.animTimer = 0
+    enemy.charging = false
+    enemy.chargeVel = undefined
     return
   }
   if (chance(rng, enemyDef(enemy.kind).painChance)) {
     enemy.state = 'hurt'
     enemy.stateTimer = HURT_TIME
+    // A flinch interrupts a charge (lost soul painchance 256 ⇒ always flinches).
+    enemy.charging = false
+    enemy.chargeVel = undefined
   }
 }
 
@@ -221,22 +435,133 @@ function facePlayer(enemy: Enemy, target: Vec2): void {
   enemy.angle = normalizeAngle(Math.atan2(target.y - enemy.pos.y, target.x - enemy.pos.x))
 }
 
-/** Execute an attack: ranged enemies launch a fireball, melee enemies bite. */
+/** Resolve an enemy's melee reach in cells (def override, else config default). */
+function meleeReach(def: EnemyDef): number {
+  return def.meleeRange ?? MELEE_RANGE
+}
+
+/**
+ * Execute an attack, dispatched on the archetype. Hitscan applies bullets on LOS;
+ * projectile spawns one-or-more missiles (fan for the mancubus); melee bites in
+ * range; charger launches a dash. Hybrids prefer their melee branch up close.
+ */
 function attack(
   enemy: Enemy,
   player: Player,
+  scene: SceneQuery,
   projectiles: Projectile[],
   def: EnemyDef,
   rng: Rng,
+  distance: number,
 ): void {
-  if (def.ranged) {
-    // Fire along the facing angle with a touch of jitter so the imp can miss.
-    const aim = enemy.angle + randRange(rng, -AIM_JITTER, AIM_JITTER)
-    const dir = fromAngle(aim)
-    projectiles.push(spawnProjectile('fireball', enemy.pos, dir, def.attackDamage, true))
-  } else {
-    damagePlayer(player, def.attackDamage)
+  enemy.state = 'attack'
+  enemy.stateTimer = ATTACK_POSE_TIME
+  enemy.attackTimer = def.attackCooldown
+
+  // Hybrids (imp/caco/revenant) bite when the player is within melee reach.
+  if (def.hasMelee === true && distance <= meleeReach(def)) {
+    damagePlayer(
+      player,
+      rollDamage(rng, def.meleeSides ?? def.damageSides, def.meleeMul ?? def.damageMul),
+    )
+    return
   }
+
+  switch (def.archetype) {
+    case 'hitscan':
+      hitscanAttack(enemy, player, scene, def, rng)
+      return
+    case 'projectile':
+      projectileAttack(enemy, projectiles, def, rng)
+      return
+    case 'charger':
+      beginCharge(enemy, player, def)
+      return
+    default:
+      // melee: bite when in range.
+      if (distance <= meleeReach(def) || distance <= def.attackRange) {
+        damagePlayer(player, rollDamage(rng, def.damageSides, def.damageMul))
+      }
+  }
+}
+
+/**
+ * Hitscan: Doom hitscan is reliable, so on a clear line of sight every bullet
+ * lands. attackShots bullets (zombieman 1, shotgun guy 3) each roll the dice.
+ */
+function hitscanAttack(
+  enemy: Enemy,
+  player: Player,
+  scene: SceneQuery,
+  def: EnemyDef,
+  rng: Rng,
+): void {
+  if (!lineOfSight(scene, enemy.pos, player.pos)) {
+    return
+  }
+  for (let i = 0; i < def.attackShots; i++) {
+    damagePlayer(player, rollDamage(rng, def.damageSides, def.damageMul))
+  }
+}
+
+/**
+ * Projectile: fire attackShots fireballs toward the player. A single shot uses the
+ * facing angle with a touch of jitter; the mancubus (6 shots) fans them out in
+ * ±FAT_SPREAD steps around the facing.
+ */
+function projectileAttack(enemy: Enemy, projectiles: Projectile[], def: EnemyDef, rng: Rng): void {
+  const speed = def.projectileSpeed
+  const shots = def.attackShots
+  for (let i = 0; i < shots; i++) {
+    const spread =
+      shots > 1 ? (i - (shots - 1) / 2) * FAT_SPREAD : randRange(rng, -AIM_JITTER, AIM_JITTER)
+    const dir = fromAngle(enemy.angle + spread)
+    const dmg = rollDamage(rng, def.damageSides, def.damageMul)
+    projectiles.push(spawnProjectile('fireball', enemy.pos, dir, dmg, true, speed))
+  }
+}
+
+/** Begin a lost-soul charge: lock chargeVel toward the player at the dash speed. */
+function beginCharge(enemy: Enemy, player: Player, def: EnemyDef): void {
+  const dir = normalize(sub(player.pos, enemy.pos))
+  enemy.charging = true
+  enemy.chargeVel = scale(dir, def.projectileSpeed ?? 0)
+}
+
+/**
+ * Advance a charging lost soul one fixed step. It moves along chargeVel; touching
+ * the player deals contact damage and ends the charge; hitting a wall ends it too.
+ * Either way the cooldown is set so it pauses before the next dash.
+ */
+function chargeStep(enemy: Enemy, player: Player, scene: SceneQuery, rng: Rng): void {
+  const def = enemyDef(enemy.kind)
+  const vel = enemy.chargeVel ?? { x: 0, y: 0 }
+  const step = scale(vel, 1 / 60)
+  const before = enemy.pos
+  const moved = moveWithCollision(scene, before, step, def.radius)
+
+  // Contact with the player: deal contact damage, stop, go on cooldown.
+  const reach = def.radius + PLAYER_RADIUS
+  if (Math.hypot(player.pos.x - moved.x, player.pos.y - moved.y) <= reach) {
+    damagePlayer(player, rollDamage(rng, def.damageSides, def.damageMul))
+    endCharge(enemy, def)
+    return
+  }
+
+  // Hit a wall (no progress this step): stop the charge.
+  if (Math.abs(moved.x - before.x) < 1e-4 && Math.abs(moved.y - before.y) < 1e-4) {
+    endCharge(enemy, def)
+    return
+  }
+
+  enemy.pos.x = moved.x
+  enemy.pos.y = moved.y
+}
+
+/** Stop a charge and put the lost soul into its attack-recover pose + cooldown. */
+function endCharge(enemy: Enemy, def: EnemyDef): void {
+  enemy.charging = false
+  enemy.chargeVel = undefined
   enemy.state = 'attack'
   enemy.stateTimer = ATTACK_POSE_TIME
   enemy.attackTimer = def.attackCooldown
