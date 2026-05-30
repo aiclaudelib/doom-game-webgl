@@ -247,6 +247,8 @@ function renderStatsBlock(fb: Framebuffer, mode: GameMode, stats: WorldStats | n
 function renderTitle(fb: Framebuffer, mode: GameMode): void {
   switch (mode) {
     case 'menu':
+      // "#slop" hashtag tag sitting above the logo → reads as "slop Doom".
+      drawTextCentered(fb, '#SLOP', CX, 10, pal('cyan'), 2)
       drawTitle(fb, 'DOOM', CX, 26)
       break
     case 'options':
