@@ -509,7 +509,7 @@ export class DoomEngine {
     if ((this.mode === 'playing' || this.mode === 'paused') && world !== null) {
       const fullBright = world.player.lightAmpTimer > 0
       renderWorld(this.fb, world, world.camera, this.assets, this.depth, fullBright)
-      renderSprites(this.fb, world.buildSprites(), world.camera, this.depth)
+      renderSprites(this.fb, world.buildSprites(), world.camera, this.depth, fullBright)
       renderWeaponSprite(this.fb, world.player, this.assets)
       renderHud(this.fb, world.player, world.stats)
       renderFlash(this.fb, world.player)
@@ -526,7 +526,13 @@ export class DoomEngine {
         this.depth,
         world.player.lightAmpTimer > 0,
       )
-      renderSprites(this.fb, world.buildSprites(), world.camera, this.depth)
+      renderSprites(
+        this.fb,
+        world.buildSprites(),
+        world.camera,
+        this.depth,
+        world.player.lightAmpTimer > 0,
+      )
       renderHud(this.fb, world.player, world.stats)
       renderMenu(this.fb, this.mode, this.menuState, this.settings, world.stats)
     } else {

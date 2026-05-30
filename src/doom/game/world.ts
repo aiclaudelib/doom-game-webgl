@@ -48,7 +48,14 @@ import { spriteRotation } from '~/doom/engine/sprites/spriteAtlas'
 import { PICKUP_SPRITE } from '~/doom/game/pickupSprites'
 import { ACTOR_DEFS, resolveActorFrame } from '~/doom/game/actorDefs'
 import type { ActorPhase } from '~/doom/game/actorDefs'
-import { damageEnemy, enemyDef, enemyFrame, spawnEnemy, updateEnemy } from '~/doom/game/enemy'
+import {
+  damageEnemy,
+  enemyDef,
+  enemyFrame,
+  spawnEnemy,
+  startLostSoulCharge,
+  updateEnemy,
+} from '~/doom/game/enemy'
 import { PROJECTILE_DEFS, projectileFrame, updateProjectile } from '~/doom/game/projectile'
 import { tryFire, updateWeapon, weaponBySlot, weaponDef } from '~/doom/game/weapon'
 import { applyPickup, spawnPickup } from '~/doom/game/pickup'
@@ -79,6 +86,17 @@ const BFG_RAYS = 40
 const BFG_FAN = Math.PI / 2
 const BFG_RAY_STEP = BFG_FAN / BFG_RAYS
 const BFG_RAY_RANGE = 16
+
+/** Pain Elemental: hard cap on simultaneously-live Lost Souls (doomBehaviorSpec.md §3.1). */
+const LOST_SOUL_CAP = 20
+/** A spit Lost Soul appears this many cells in front of the Pain Elemental (prestep). */
+const PAIN_SKULL_PRESTEP = 0.6
+/** A_PainDie spawns up to this many Lost Souls in a ring on the elemental's death. */
+const PAIN_DEATH_SKULLS = 3
+/** Arch-vile resurrection: a corpse within this range (cells) may be raised. */
+const VILE_RAISE_RANGE = 3.0
+/** Seconds between Arch-vile resurrection scans (one revive per window). */
+const VILE_RAISE_COOLDOWN = 1.5
 
 export interface WorldEvents {
   readonly fired: WeaponKind | null
@@ -157,8 +175,10 @@ export class World implements SceneQuery {
     for (const spawn of level.enemySpawns) {
       this.enemies.push(spawnEnemy(spawn.kind, spawn.x, spawn.y))
     }
-    // Barrels are decor, not monsters — exclude them from the kill total (§5A/5B).
-    this.totalEnemies = this.enemies.filter(e => e.kind !== 'barrel').length
+    // Barrels are decor (excluded). Lost Souls have NO MF_COUNTKILL in Doom II (§3.1)
+    // AND a Pain Elemental breeds more at runtime — excluding them keeps kills ≤ total.
+    // The 4 tier-2 bosses ARE monsters and DO count toward the total.
+    this.totalEnemies = this.enemies.filter(e => !isUncounted(e.kind)).length
 
     for (const spawn of level.pickupSpawns) {
       this.pickups.push(spawnPickup(spawn.kind, spawn.x, spawn.y))
@@ -272,6 +292,7 @@ export class World implements SceneQuery {
       }
       const aliveBefore = enemy.alive
       const stateBefore = enemy.state
+      enemy.justRaised = false
       updateEnemy(enemy, player, this, this.projectiles, this.rng, dt)
       if (enemy.state === 'hurt' && stateBefore !== 'hurt') {
         enemyHurt = true
@@ -285,7 +306,15 @@ export class World implements SceneQuery {
         }
         continue
       }
-      if (aliveBefore && !enemy.alive) {
+      // Pain Elemental: consume queued skull spawns + breed 3 on death (global cap).
+      if (enemy.kind === 'painElemental') {
+        this.servicePainElemental(enemy)
+      }
+      // Arch-vile: while chasing, resurrect one nearby raisable corpse per scan window.
+      if (enemy.kind === 'archvile') {
+        this.serviceArchvile(enemy, dt)
+      }
+      if (aliveBefore && !enemy.alive && !isUncounted(enemy.kind)) {
         this.kills++
         enemyDied = true
       }
@@ -399,6 +428,114 @@ export class World implements SceneQuery {
     if (pd > 0 && lineOfSight(this, center, player.pos)) {
       damagePlayer(player, pd)
     }
+  }
+
+  /** Count Lost Souls that are alive and not in their death sequence (for the >20 cap). */
+  private liveLostSouls(): number {
+    let n = 0
+    for (const e of this.enemies) {
+      if (e.kind === 'lostSoul' && e.alive && e.state !== 'dead' && e.state !== 'dying') {
+        n++
+      }
+    }
+    return n
+  }
+
+  /**
+   * Spawn ONE charging Lost Soul a short prestep in front of `origin` (the Pain
+   * Elemental), gated by the global >20 cap. Returns true when a skull was spawned.
+   * The new skull is immediately launched into its dash at the player so it behaves
+   * exactly like the canonical A_PainShootSkull → A_SkullAttack (§3.1).
+   */
+  private spawnPainSkull(origin: Enemy): boolean {
+    if (this.liveLostSouls() >= LOST_SOUL_CAP) {
+      return false
+    }
+    const x = origin.pos.x + Math.cos(origin.angle) * PAIN_SKULL_PRESTEP
+    const y = origin.pos.y + Math.sin(origin.angle) * PAIN_SKULL_PRESTEP
+    const skull = spawnEnemy('lostSoul', x, y)
+    // Guard the freshly-spawned skull from being re-processed as a spawner this tick.
+    skull.justRaised = true
+    startLostSoulCharge(skull, this._player)
+    this.enemies.push(skull)
+    return true
+  }
+
+  /**
+   * Pain Elemental orchestration (doomBehaviorSpec.md §3.1). While alive it spits one
+   * charging Lost Soul per queued `spawnPending` (cap-gated); the first frame it starts
+   * dying it breeds up to 3 in a ring (A_PainDie), each still cap-gated. `painDied`
+   * tracks the one-shot death burst via the same idempotent `detonated` set the barrel
+   * uses, so a re-entrant spawn can never double-breed.
+   */
+  private servicePainElemental(pain: Enemy): void {
+    if (pain.alive && (pain.spawnPending ?? 0) > 0) {
+      this.spawnPainSkull(pain)
+      pain.spawnPending = 0
+    }
+    const dyingNow = pain.state === 'dying' || pain.state === 'dead'
+    const idx = this.enemies.indexOf(pain)
+    if (dyingNow && idx >= 0 && !this.detonated.has(idx)) {
+      this.detonated.add(idx)
+      for (let s = 0; s < PAIN_DEATH_SKULLS; s++) {
+        // Ring of skulls: nudge the elemental's facing 90° apart so they fan out.
+        pain.angle += Math.PI / 2
+        if (!this.spawnPainSkull(pain)) {
+          break
+        }
+      }
+    }
+  }
+
+  /**
+   * Arch-vile resurrection (doomBehaviorSpec.md §3.1). While the vile is chasing/attacking
+   * and off its scan cooldown, look for the nearest CORPSE within VILE_RAISE_RANGE that is
+   * `raisable` (true on the rank-and-file roster; never bosses / viles / barrel / Lost Soul),
+   * and restore it: full health, alive, back to chasing, death timers cleared. One revive
+   * per window. Bounded: a single corpse, never the vile itself.
+   */
+  private serviceArchvile(vile: Enemy, dt: number): void {
+    if (!vile.alive || vile.state === 'dying' || vile.state === 'dead') {
+      return
+    }
+    vile.raiseCooldown = Math.max(0, (vile.raiseCooldown ?? 0) - dt)
+    if (vile.raiseCooldown > 0) {
+      return
+    }
+    const corpse = this.findRaisableCorpse(vile)
+    if (corpse === null) {
+      return
+    }
+    const def = enemyDef(corpse.kind)
+    corpse.health = def.maxHealth
+    corpse.alive = true
+    corpse.state = 'chase'
+    corpse.stateTimer = 0
+    corpse.animTimer = 0
+    corpse.charging = false
+    corpse.chargeVel = undefined
+    corpse.justRaised = true
+    vile.raiseCooldown = VILE_RAISE_COOLDOWN
+  }
+
+  /** Nearest dead, raisable corpse within VILE_RAISE_RANGE of `vile` (never the vile). */
+  private findRaisableCorpse(vile: Enemy): Enemy | null {
+    let best: Enemy | null = null
+    let bestDist = VILE_RAISE_RANGE
+    for (const e of this.enemies) {
+      if (e === vile || e.state !== 'dead' || e.alive) {
+        continue
+      }
+      if (enemyDef(e.kind).raisable !== true) {
+        continue
+      }
+      const d = dist(vile.pos, e.pos)
+      if (d <= bestDist) {
+        best = e
+        bestDist = d
+      }
+    }
+    return best
   }
 
   /**
@@ -677,6 +814,7 @@ export class World implements SceneQuery {
         pos: { x: proj.pos.x, y: proj.pos.y },
         scale: PROJECTILE_SCALE,
         zOffset: PROJECTILE_Z_OFFSET,
+        bright: true,
       })
     }
 
@@ -695,6 +833,7 @@ export class World implements SceneQuery {
         pos: { x: pickup.pos.x, y: pickup.pos.y },
         scale: PICKUP_SCALE,
         zOffset: this.pickupBob(pickup),
+        bright: true,
       })
     }
 
@@ -718,6 +857,7 @@ export class World implements SceneQuery {
       pos: { x: enemy.pos.x, y: enemy.pos.y },
       scale: fbDef.scale,
       ...(fbDef.flying === true ? { zOffset: FLYING_Z_OFFSET } : {}),
+      ...(enemy.kind === 'spectre' ? { fuzz: true } : {}),
     }
   }
 
@@ -740,7 +880,9 @@ export class World implements SceneQuery {
     if (ref === null) {
       return null
     }
-    return offsetSprite(ref, prop.pos, def.ceiling === true ? CEILING_PROP_Z_OFFSET : undefined)
+    return offsetSprite(ref, prop.pos, def.ceiling === true ? CEILING_PROP_Z_OFFSET : undefined, {
+      bright: def.fullbright === true,
+    })
   }
 
   /**
@@ -765,7 +907,8 @@ export class World implements SceneQuery {
     if (ref === null) {
       return null
     }
-    return offsetSprite(ref, barrel.pos, undefined)
+    // The BEXP blast is fullbright; the idle BAR1 frames shade with distance.
+    return offsetSprite(ref, barrel.pos, undefined, { bright: dying })
   }
 
   /**
@@ -786,7 +929,8 @@ export class World implements SceneQuery {
     if (ref === null) {
       return null
     }
-    return offsetSprite(ref, pickup.pos, this.pickupBob(pickup))
+    // Items are lit pickups — render fullbright so they stay visible at any distance.
+    return offsetSprite(ref, pickup.pos, this.pickupBob(pickup), { bright: true })
   }
 
   /** Small deterministic vertical bob (cells) so pickups gently float in place. */
@@ -825,7 +969,10 @@ export class World implements SceneQuery {
     }
 
     const flying = enemyDef(enemy.kind).flying === true
-    return offsetSprite(ref, enemy.pos, flying ? FLYING_Z_OFFSET : undefined)
+    return offsetSprite(ref, enemy.pos, flying ? FLYING_Z_OFFSET : undefined, {
+      bright: resolved.bright,
+      fuzz: enemy.kind === 'spectre',
+    })
   }
 
   /**
@@ -846,8 +993,15 @@ export class World implements SceneQuery {
     if (ref === null) {
       return null
     }
-    return offsetSprite(ref, proj.pos, PROJECTILE_Z_OFFSET)
+    // Projectiles glow — render fullbright so they read as energy in the dark.
+    return offsetSprite(ref, proj.pos, PROJECTILE_Z_OFFSET, { bright: true })
   }
+}
+
+/** Optional render flags an atlas billboard may carry (fullbright frame / fuzz shimmer). */
+interface SpriteFlags {
+  readonly bright?: boolean
+  readonly fuzz?: boolean
 }
 
 /** A Doom-offset billboard from an atlas frame ref at a world position (shared so
@@ -856,6 +1010,7 @@ function offsetSprite(
   ref: { tex: Texture; flip: boolean; ox: number; oy: number },
   pos: Vec2,
   zOffset: number | undefined,
+  flags: SpriteFlags = {},
 ): SpriteInstance {
   return {
     texture: ref.tex,
@@ -867,6 +1022,8 @@ function offsetSprite(
     pxW: ref.tex.width,
     pxH: ref.tex.height,
     ...(zOffset !== undefined ? { zOffset } : {}),
+    ...(flags.bright === true ? { bright: true } : {}),
+    ...(flags.fuzz === true ? { fuzz: true } : {}),
   }
 }
 
@@ -931,4 +1088,13 @@ function pruneDead(projectiles: Projectile[]): void {
 /** The icon texture for a pickup kind. */
 function pickupTexture(assets: Assets, pickup: Pickup): Texture {
   return assets.pickup[pickup.kind]
+}
+
+/**
+ * Kinds excluded from the kill total: the barrel is decor, and Lost Souls have no
+ * MF_COUNTKILL in Doom II (doomBehaviorSpec.md §3.1) AND are bred at runtime by a Pain
+ * Elemental — counting them would push kills past the level's monster total.
+ */
+function isUncounted(kind: Enemy['kind']): boolean {
+  return kind === 'barrel' || kind === 'lostSoul'
 }

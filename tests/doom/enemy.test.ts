@@ -210,4 +210,66 @@ describe('updateEnemy', () => {
     expect(barrel.state).toBe('idle') // never chases/attacks
     expect(player.health).toBe(before) // deals no damage on its own
   })
+
+  it('projectile: a cyberdemon fires a 3-rocket volley toward the player', () => {
+    const scene = openScene()
+    const player = createPlayer(vec(2.5, 2.5), 0)
+    const enemy = spawnEnemy('cyberdemon', 12.5, 2.5) // inside attackRange (18), LOS clear
+    const projectiles: Projectile[] = []
+
+    updateEnemy(enemy, player, scene, projectiles, NO_PAIN, 1 / 60)
+
+    expect(enemy.state).toBe('attack')
+    // attackShots 3 ⇒ a tight burst of three rockets, all aimed at the player (−x).
+    expect(projectiles.length).toBe(3)
+    expect(projectiles.every(p => p.fromEnemy && p.vel.x < 0)).toBe(true)
+  })
+
+  it('hitscan: a spider mastermind hurts the player with a 3-bullet burst', () => {
+    const scene = openScene()
+    const player = createPlayer(vec(2.5, 2.5), 0)
+    const enemy = spawnEnemy('spiderMastermind', 10.5, 2.5)
+    expect(ENEMY_DEFS.spiderMastermind.attackShots).toBe(3)
+    expect(ENEMY_DEFS.spiderMastermind.splashImmune).toBe(true)
+    const before = player.health
+
+    updateEnemy(enemy, player, scene, [], NO_PAIN, 1 / 60)
+
+    expect(enemy.state).toBe('attack')
+    // 3 bullets of 5/10/15 each land on a clear line of sight — a chunk of damage.
+    expect(player.health).toBeLessThan(before)
+  })
+
+  it('vile: an arch-vile fire attack deals ~20..90 on a clear line of sight', () => {
+    const scene = openScene()
+    const player = createPlayer(vec(2.5, 2.5), 0)
+    const enemy = spawnEnemy('archvile', 6.5, 2.5) // inside attackRange (12), LOS clear
+    expect(ENEMY_DEFS.archvile.archetype).toBe('vile')
+    const before = player.health
+
+    updateEnemy(enemy, player, scene, [], NO_PAIN, 1 / 60)
+
+    expect(enemy.state).toBe('attack')
+    const dealt = before - player.health
+    // Flat 20 + a 0..70 distance-falloff bonus (≈20..90 total), no projectile spawned.
+    expect(dealt).toBeGreaterThanOrEqual(20)
+    expect(dealt).toBeLessThanOrEqual(90)
+  })
+
+  it('vile: an arch-vile fire deals NOTHING when LOS is broken on the firing tick', () => {
+    const scene = wallScene(4) // a wall at column 4 sits between vile and player
+    const player = createPlayer(vec(2.5, 2.5), 0)
+    const enemy = spawnEnemy('archvile', 6.5, 2.5)
+    const before = player.health
+
+    // Force the enemy to chase + attempt the fire even though sight is blocked: the
+    // outer updateEnemy gate already refuses on no-LOS, so prove the inner LOS recheck
+    // by placing it where the chase gate would pass only if it could see — here it can't,
+    // so the player must be unharmed.
+    for (let i = 0; i < 10; i++) {
+      updateEnemy(enemy, player, scene, [], NO_PAIN, 1 / 60)
+    }
+
+    expect(player.health).toBe(before)
+  })
 })

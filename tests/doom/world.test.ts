@@ -231,6 +231,162 @@ describe('World', () => {
     expect(world.propStates[0]?.animTimer).toBeGreaterThan(0)
   })
 
+  it('a pain elemental spits a charging lost soul when it can see the player', () => {
+    // Player '@' faces east; a pain elemental 'ø' sits down a clear, wide corridor.
+    const source: LevelSource = {
+      name: 'Pain Spawn',
+      rows: [
+        '##############',
+        '#............#',
+        '#@.........ø.#',
+        '#............#',
+        '##############',
+      ],
+      floorFlat: 0,
+      ceilingFlat: 2,
+      playerAngle: 0,
+    }
+    const world = new World(compileLevel(source), createAssets(1), mulberry32(1), defaultSettings())
+    expect(world.enemyStates.filter(e => e.kind === 'lostSoul')).toHaveLength(0)
+    // The 4 tier-2 bosses count as monsters: the lone pain elemental is the total.
+    expect(world.stats.totalEnemies).toBe(1)
+
+    let souls = 0
+    for (let i = 0; i < 600 && souls === 0; i++) {
+      world.update(input({}), 1 / 60)
+      souls = world.enemyStates.filter(e => e.kind === 'lostSoul').length
+    }
+    expect(souls).toBeGreaterThanOrEqual(1)
+  })
+
+  it('a pain elemental refuses to spawn when 20+ lost souls are already live (>20 cap)', () => {
+    // Twenty-one lost souls 'l' fill the room alongside a pain elemental 'ø'. With the
+    // cap already met, the elemental must spawn NOTHING — the count stays 21.
+    // Row 2 holds 19 lost souls, row 3 holds 2 → 21 live souls, one over the >20 cap.
+    const source: LevelSource = {
+      name: 'Pain Cap',
+      rows: [
+        '#####################',
+        '#@.................ø#',
+        '#lllllllllllllllllll#',
+        '#ll................ø#',
+        '#####################',
+      ],
+      floorFlat: 0,
+      ceilingFlat: 2,
+      playerAngle: 0,
+    }
+    const world = new World(compileLevel(source), createAssets(1), mulberry32(1), defaultSettings())
+    const liveSouls = () =>
+      world.enemyStates.filter(e => e.kind === 'lostSoul' && e.state !== 'dead').length
+    expect(liveSouls()).toBe(21)
+
+    // Tick a few frames: the elemental sees the player and tries to spawn, but the cap
+    // (>20) blocks it — no NEW soul appears (count never climbs above the starting 21).
+    let maxSeen = liveSouls()
+    for (let i = 0; i < 20; i++) {
+      world.update(input({}), 1 / 60)
+      maxSeen = Math.max(maxSeen, liveSouls())
+    }
+    expect(maxSeen).toBeLessThanOrEqual(21)
+  })
+
+  it('a pain elemental breeds up to 3 lost souls when it dies', () => {
+    // Player '@' faces a near-dead pain elemental 'ø'; a few pistol shots finish it and
+    // A_PainDie spits a ring of up to 3 charging lost souls.
+    const source: LevelSource = {
+      name: 'Pain Death',
+      rows: ['##############', '#@.........ø.#', '##############'],
+      floorFlat: 0,
+      ceilingFlat: 2,
+      playerAngle: 0,
+    }
+    const world = new World(compileLevel(source), createAssets(1), mulberry32(1), defaultSettings())
+    // Give the player the rocket launcher to burst the 400-HP elemental down quickly.
+    world.player.weapons.rocket = true
+    world.player.currentWeapon = 'rocket'
+    world.player.ammo.rockets = 40
+
+    let painDead = false
+    for (let i = 0; i < 600 && !painDead; i++) {
+      world.update(input({ fire: true, firing: true }), 1 / 60)
+      painDead = world.enemyStates.some(
+        e => e.kind === 'painElemental' && (e.state === 'dying' || e.state === 'dead'),
+      )
+    }
+    expect(painDead).toBe(true)
+    // The death burst bred at least one (≤3) lost soul.
+    const souls = world.enemyStates.filter(e => e.kind === 'lostSoul').length
+    expect(souls).toBeGreaterThanOrEqual(1)
+    expect(souls).toBeLessThanOrEqual(3)
+  })
+
+  it('an arch-vile resurrects a nearby raisable corpse but never a barrel', () => {
+    // Player '@' faces east along row 1, with a grunt 'g' (raisable) then a barrel 'Q'
+    // lined up ahead. An arch-vile '†' sits one row below — adjacent to both corpses
+    // (inside VILE_RAISE_RANGE) but OFF the player's firing line so it survives. We shoot
+    // the grunt + barrel dead, then let the vile's scan raise the grunt — never the barrel.
+    const source: LevelSource = {
+      name: 'Vile Raise',
+      rows: ['#######', '#@.gQ.#', '#..†..#', '#######'],
+      floorFlat: 0,
+      ceilingFlat: 2,
+      playerAngle: 0,
+    }
+    const world = new World(compileLevel(source), createAssets(1), mulberry32(1), defaultSettings())
+
+    const corpse = (kind: string) =>
+      world.enemyStates.some(e => e.kind === kind && e.state === 'dead')
+
+    // Phase 1: fire until the grunt AND the barrel are corpses (the pistol drops the
+    // grunt first, then the now-exposed barrel detonates).
+    for (let i = 0; i < 1200; i++) {
+      world.update(input({ fire: true, firing: true }), 1 / 60)
+      if (corpse('grunt') && corpse('barrel')) {
+        break
+      }
+    }
+    expect(corpse('grunt')).toBe(true)
+    expect(corpse('barrel')).toBe(true)
+    // The vile must still be alive to do the resurrecting.
+    expect(world.enemyStates.some(e => e.kind === 'archvile' && e.state !== 'dead')).toBe(true)
+
+    // Phase 2: stop firing and let the vile's resurrection scan run. The raisable grunt
+    // comes back alive (no longer a corpse); the barrel corpse must persist (never raised).
+    let gruntRaised = false
+    for (let i = 0; i < 600 && !gruntRaised; i++) {
+      world.update(input({}), 1 / 60)
+      gruntRaised = world.enemyStates.some(e => e.kind === 'grunt' && e.state !== 'dead')
+    }
+    expect(gruntRaised).toBe(true)
+    // The barrel is decor — never raisable. Its corpse stays dead.
+    expect(corpse('barrel')).toBe(true)
+  })
+
+  it('a cyberdemon is immune to its own rocket splash (splashImmune)', () => {
+    // A cyberdemon 'Δ' sits point-blank-ish to the player; it fires splash rockets that
+    // detonate near itself. splashImmune means those blasts never chip its 4000 HP via
+    // splash — it only ever takes the player's direct shots. We never fire, so the only
+    // damage source is the cyber's own rockets' splash → its HP must stay at full.
+    const source: LevelSource = {
+      name: 'Cyber Splash',
+      rows: ['##############', '#@.........Δ.#', '##############'],
+      floorFlat: 0,
+      ceilingFlat: 2,
+      playerAngle: 0,
+    }
+    const world = new World(compileLevel(source), createAssets(1), mulberry32(1), defaultSettings())
+    const playerHpBefore = world.player.health
+    for (let i = 0; i < 300; i++) {
+      world.update(input({}), 1 / 60) // never fire
+    }
+    // The cyberdemon is alive and undamaged — splash never staggered or chipped it.
+    expect(world.enemyStates.some(e => e.kind === 'cyberdemon' && e.state !== 'dead')).toBe(true)
+    expect(world.stats.kills).toBe(0)
+    // Its own rockets' splash did reach the player though (proving splash fired at all).
+    expect(world.player.health).toBeLessThan(playerHpBefore)
+  })
+
   it('reports dryFired on an empty trigger pull and not on a real shot', () => {
     const world = makeWorld()
     // Drain the pistol's ammo so the next fresh press clicks empty.

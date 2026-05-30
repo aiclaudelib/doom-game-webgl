@@ -72,6 +72,9 @@ const CHAR_TO_TILE: Readonly<Record<string, number>> = {
 //   g grunt, S shotgunGuy, c chaingunner, i imp, d demon, p spectre, l lostSoul,
 //   k cacodemon, K hellKnight, n baron, f mancubus, A arachnotron, v revenant,
 //   Q explosive barrel (a shootable, exploding decor entity modelled as an enemy).
+// The tier-2 bosses use distinct NON-ASCII glyphs because the printable-ASCII set
+// (89 chars) is fully consumed by the tiles/player/enemy/pickup/prop tables above:
+//   ø painElemental, † archvile, Δ cyberdemon, Ω spiderMastermind.
 const CHAR_TO_ENEMY: Readonly<Record<string, EnemyKind>> = {
   g: 'grunt',
   S: 'shotgunGuy',
@@ -87,6 +90,10 @@ const CHAR_TO_ENEMY: Readonly<Record<string, EnemyKind>> = {
   A: 'arachnotron',
   v: 'revenant',
   Q: 'barrel',
+  ø: 'painElemental',
+  '†': 'archvile',
+  Δ: 'cyberdemon',
+  Ω: 'spiderMastermind',
 }
 
 // Pickup chars. Existing: h health, a armor(green), m medkit, b bullets, s shells,

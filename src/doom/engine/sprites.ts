@@ -3,13 +3,61 @@
 // buffer, and painted far-to-near with alpha testing. Floor-anchored by default;
 // a sprite's optional zOffset lifts it off the floor (e.g. fireballs).
 
-import type { Camera, DepthBuffer, Framebuffer, SpriteInstance } from '~/doom/types'
+import type { Camera, DepthBuffer, Framebuffer, SpriteInstance, Texture } from '~/doom/types'
 import { CAMERA_PLANE_SCALE, SPRITE_PX_PER_TILE, VIEW_H, VIEW_W } from '~/doom/config'
+import { fogIntensity } from '~/doom/core/color'
 import { fromAngle, rotate } from '~/doom/core/vec'
 import { paintColumn } from '~/doom/engine/framebuffer'
 
 /** Sprites nearer than this (camera-space depth) are culled to avoid divide blowups. */
 const MIN_DEPTH = 0.05
+
+/**
+ * Pick a sprite's shading intensity. Fullbright frames (glowing items, projectiles,
+ * explosions) and the global light-amp powerup ignore distance and stay at full 1;
+ * everything else darkens with camera-space depth exactly like the walls (fogIntensity),
+ * so distant billboards fade into the gloom instead of staying eerily bright.
+ */
+export function spriteIntensity(depth: number, bright: boolean, fullBright: boolean): number {
+  return bright || fullBright ? 1 : fogIntensity(depth)
+}
+
+/** One sprite column's shading inputs, shared by both anchoring paths (one paint site). */
+interface ColumnShade {
+  readonly intensity: number
+  readonly fuzz: boolean
+}
+
+/**
+ * Paint a single billboard column with shading + optional fuzz. A thin shared wrapper
+ * so the Doom-offset and legacy paths have ONE paintColumn call site (no duplicate
+ * 11-arg block), keeping the lines short and the duplication checker happy.
+ */
+function paintSpriteColumn(
+  fb: Framebuffer,
+  sx: number,
+  drawStart: number,
+  drawEnd: number,
+  spanTop: number,
+  spanHeight: number,
+  tex: Texture,
+  texX: number,
+  shade: ColumnShade,
+): void {
+  paintColumn(
+    fb,
+    sx,
+    drawStart,
+    drawEnd,
+    spanTop,
+    spanHeight,
+    tex,
+    texX,
+    shade.intensity,
+    true,
+    shade.fuzz,
+  )
+}
 
 interface ProjectedSprite {
   readonly sprite: SpriteInstance
@@ -25,6 +73,7 @@ export function renderSprites(
   sprites: readonly SpriteInstance[],
   camera: Camera,
   depth: DepthBuffer,
+  fullBright = false,
 ): void {
   if (sprites.length === 0) {
     return
@@ -58,6 +107,13 @@ export function renderSprites(
     const screenCenterX = Math.floor((VIEW_W / 2) * (1 + transformX / transformY))
 
     const tex = sprite.texture
+
+    // Distance shading: bright frames / light-amp stay at 1, others fog with depth.
+    // Spectre frames carry the fuzz dither. Bundled so both paths share one paint call.
+    const shade: ColumnShade = {
+      intensity: spriteIntensity(transformY, sprite.bright === true, fullBright),
+      fuzz: sprite.fuzz === true,
+    }
 
     // Pixels per world tile at this depth — the shared projection scale.
     const projScale = VIEW_H / transformY
@@ -102,7 +158,7 @@ export function renderSprites(
         if (sprite.flip === true) {
           texX = tex.width - 1 - texX
         }
-        paintColumn(fb, sx, drawStartY, drawEndY, spanTop, spriteHeight, tex, texX, 1, true)
+        paintSpriteColumn(fb, sx, drawStartY, drawEndY, spanTop, spriteHeight, tex, texX, shade)
       }
       continue
     }
@@ -156,7 +212,7 @@ export function renderSprites(
         texX = tex.width - 1
       }
 
-      paintColumn(fb, sx, drawStartY, drawEndY, spanTop, spanHeight, tex, texX, 1, true)
+      paintSpriteColumn(fb, sx, drawStartY, drawEndY, spanTop, spanHeight, tex, texX, shade)
     }
   }
 }

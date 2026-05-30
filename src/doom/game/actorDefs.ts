@@ -30,6 +30,8 @@ export interface ActorStates {
   readonly missile?: StateSeq
   readonly pain?: StateSeq
   readonly death: StateSeq
+  /** Arch-vile resurrection / heal pose (VILE '[' '\' ']'); falls back to `see` elsewhere. */
+  readonly heal?: StateSeq
 }
 
 /** One actor: its 4-letter sprite prefix and its state table. */
@@ -38,14 +40,18 @@ export interface ActorDef {
   readonly states: ActorStates
 }
 
-/** A resolved frame for the renderer: which letter to draw, and whether it is fullbright. */
+/**
+ * A resolved frame for the renderer: which letter to draw, and whether it is fullbright.
+ * `bright` is CONSUMED by the renderer: world.ts copies it onto SpriteInstance.bright and
+ * renderSprites skips distance shading for that frame (muzzle flashes, fireball windups…).
+ */
 export interface ResolvedFrame {
   readonly letter: string
   readonly bright: boolean
 }
 
 /** The phases the resolver understands. `corpse` holds the death sequence's last frame. */
-export type ActorPhase = 'see' | 'melee' | 'missile' | 'pain' | 'death' | 'corpse'
+export type ActorPhase = 'see' | 'melee' | 'missile' | 'pain' | 'death' | 'corpse' | 'heal'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Compact DSL — terse builders so every actor block is short and all-distinct.
@@ -209,6 +215,52 @@ export const ACTOR_DEFS: Readonly<Record<EnemyKind, ActorDef>> = {
       death: seq('M7 N7 O7 P7 Q-1'),
     },
   },
+  // Pain Elemental — PAIN: float see A-C, A_PainAttack missile pose D-F (F bright),
+  // pain G, death H-M (doomBehaviorSpec.md §3.1). No direct attack; world spawns skulls.
+  painElemental: {
+    sprite: 'PAIN',
+    states: {
+      see: seq('A3 B3 C3', true),
+      missile: seq('D4 E4 F4b'),
+      pain: seq('G6 G6'),
+      death: seq('H8 I8 J8 K8 L8 M-1'),
+    },
+  },
+  // Arch-vile — VILE: fast see A-F, the fire-attack pose G-J (J bright), pain K, the
+  // resurrection heal pose '[' '\' ']', death S-Y. Fire damage is handled specially
+  // in enemy.ts (instant LOS hit, not a missile); resurrection is world-side.
+  archvile: {
+    sprite: 'VILE',
+    states: {
+      see: seq('A2 B2 C2 D2 E2 F2', true),
+      missile: seq('G8 H8 I8 J8b'),
+      pain: seq('K5'),
+      heal: seq('[6 \\6 ]6'),
+      death: seq('S7 T7 U7 V7 W7 X7 Y-1'),
+    },
+  },
+  // Cyberdemon — CYBR: see A-D, the 3-frame rocket attack E-G (each spawns a rocket),
+  // pain H, death I-P (doomBehaviorSpec.md §3.1). HP4000, splash-immune.
+  cyberdemon: {
+    sprite: 'CYBR',
+    states: {
+      see: seq('A4 B4 C4 D4', true),
+      missile: seq('E6 F6 G6'),
+      pain: seq('H6'),
+      death: seq('I9 J9 K9 L9 M9 N9 O9 P-1'),
+    },
+  },
+  // Spider Mastermind — SPID: wide see A-F, the 3-bullet hitscan burst G-H (H bright),
+  // pain I, death J-S (doomBehaviorSpec.md §3.1). HP3000, radius 2.0, splash-immune.
+  spiderMastermind: {
+    sprite: 'SPID',
+    states: {
+      see: seq('A3 B3 C3 D3 E3 F3', true),
+      missile: seq('A4 G4b H4b'),
+      pain: seq('I3'),
+      death: seq('J6 K6 L6 M6 N6 O6 P6 Q6 R6 S-1'),
+    },
+  },
   // Explosive barrel — idle BAR1 A/B @6t. The death blast uses the separate BEXP
   // lump, so world.ts special-cases the barrel's billboard entirely; this entry only
   // keeps the Record<EnemyKind, ActorDef> total satisfied with a sane idle fallback.
@@ -232,6 +284,8 @@ function seqForPhase(def: ActorDef, phase: ActorPhase): StateSeq {
       return states.melee ?? states.see
     case 'missile':
       return states.missile ?? states.see
+    case 'heal':
+      return states.heal ?? states.see
     case 'pain':
       return states.pain ?? states.see
     default:

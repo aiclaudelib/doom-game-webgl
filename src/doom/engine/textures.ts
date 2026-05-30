@@ -638,6 +638,42 @@ const ENEMY_PALETTES: Readonly<Record<EnemyKind, EnemyPalette>> = {
     horns: false,
     bulky: false,
   },
+  // Pain Elemental — a bloated floating maw: pale fleshy body, dark underside, red eye.
+  painElemental: {
+    body: mix(pal('brown'), pal('lightGray'), 0.5),
+    bodyDark: shade(pal('darkBrown'), 0.9),
+    limb: shade(pal('brown'), 0.7),
+    eye: pal('red'),
+    horns: true,
+    bulky: true,
+  },
+  // Arch-vile — gaunt and PALE with burning-orange eyes (the flame-caster necromancer).
+  archvile: {
+    body: shade(pal('white'), 0.9),
+    bodyDark: pal('lightGray'),
+    limb: shade(pal('lightGray'), 0.75),
+    eye: pal('orange'),
+    horns: false,
+    bulky: false,
+  },
+  // Cyberdemon — a towering BULKY brown-steel cyborg with glowing-red eyes.
+  cyberdemon: {
+    body: mix(pal('brown'), pal('steel'), 0.45),
+    bodyDark: shade(pal('darkBrown'), 0.85),
+    limb: pal('darkSteel'),
+    eye: pal('red'),
+    horns: true,
+    bulky: true,
+  },
+  // Spider Mastermind — a vast BULKY steel brain-on-legs with cold cyan eyes.
+  spiderMastermind: {
+    body: shade(pal('steel'), 0.95),
+    bodyDark: shade(pal('darkSteel'), 0.85),
+    limb: pal('gray'),
+    eye: pal('cyan'),
+    horns: false,
+    bulky: true,
+  },
   // Explosive barrel — a green-grey metal drum with red warning trim (eye colour).
   // Reuses the humanoid generator so headless still renders a barrel-ish billboard.
   barrel: {

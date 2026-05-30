@@ -233,6 +233,11 @@ export function blitTexture(
  * span (spanTop, spanHeight) so clipping at the viewport edges never distorts the
  * texture mapping. RGB is shaded by `intensity`; with `alphaTest`, texels whose
  * alpha < 128 are skipped.
+ *
+ * `fuzz` paints the Spectre partial-invisibility shimmer: a DETERMINISTIC checkerboard
+ * dither keyed off the screen coordinates (`(sx + y) & 1`) drops every other texel so
+ * the billboard reads as a flickering shadow. Derived purely from coordinates — no RNG,
+ * no clock — so the render stays headless-safe and reproducible.
  */
 export function paintColumn(
   fb: Framebuffer,
@@ -245,6 +250,7 @@ export function paintColumn(
   texX: number,
   intensity: number,
   alphaTest: boolean,
+  fuzz = false,
 ): void {
   if (sx < 0 || sx >= fb.width) return
   if (spanHeight <= 0) return
@@ -268,6 +274,9 @@ export function paintColumn(
   const invSpan = texH / spanHeight
 
   for (let y = y0; y <= y1; y++) {
+    // Fuzz: a deterministic screen-coord checkerboard hides half the texels so the
+    // Spectre shimmers as a partial shadow. Stable per (sx, y) — no RNG, no clock.
+    if (fuzz && ((sx + y) & 1) === 0) continue
     // Map screen-y back through the unclipped span to a texture row.
     let v = Math.floor((y - spanTop) * invSpan)
     if (v < 0) v = 0

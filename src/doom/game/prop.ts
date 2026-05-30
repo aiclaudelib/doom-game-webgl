@@ -17,6 +17,8 @@ const TICS_PER_SECOND = 35
  *   `animTics` tics on the 35Hz clock (the few animated props: lamps, torches,
  *   heart pillar, twitching victim, flickering gore).
  * - `fullbright` render ignoring sector light (lamps/torches/candles/self-lit gore).
+ *   CONSUMED by the renderer: world.ts sets SpriteInstance.bright from it, and
+ *   renderSprites then skips distance shading for the billboard.
  * - `ceiling`    MF_SPAWNCEILING → pin the billboard near the ceiling.
  */
 export interface PropDef {

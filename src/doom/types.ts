@@ -61,6 +61,14 @@ export type EnemyKind =
   | 'mancubus'
   | 'arachnotron'
   | 'revenant'
+  // Tier-2 bosses + their signature mechanics (doomBehaviorSpec.md §3.1):
+  // painElemental spits charging Lost Souls (archetype 'spawner'); archvile is the
+  // instant-LOS fire attacker + corpse resurrector (archetype 'vile'); cyberdemon
+  // fires splash rockets and spiderMastermind a 3-bullet hitscan burst (both splash-immune).
+  | 'painElemental'
+  | 'archvile'
+  | 'cyberdemon'
+  | 'spiderMastermind'
   // Explosive barrel — a stationary, shootable, exploding decor entity modelled as
   // an enemy so the hitscan / projectile / splash damage paths hit it for free.
   | 'barrel'
@@ -323,6 +331,10 @@ export interface SpriteInstance {
   readonly pxW?: number
   /** Frame height in atlas pixels; presence selects the Doom-offset anchoring path. */
   readonly pxH?: number
+  /** Frame is fullbright (glowing item/projectile/explosion): skip distance shading. */
+  readonly bright?: boolean
+  /** Render with the partial-invisibility "fuzz" shimmer (Spectre). */
+  readonly fuzz?: boolean
 }
 
 /** Presenter transform mapping render-buffer pixels onto the on-screen canvas. */
@@ -441,7 +453,19 @@ export interface WeaponDef {
  * `inert` actors (the explosive barrel) never chase or attack — they only process
  * their hurt/dying/dead timers and animation.
  */
-export type EnemyArchetype = 'melee' | 'hitscan' | 'projectile' | 'charger' | 'inert'
+export type EnemyArchetype =
+  | 'melee'
+  | 'hitscan'
+  | 'projectile'
+  | 'charger'
+  | 'inert'
+  // Pain Elemental: faces + chases the player (flying) and SIGNALS a Lost-Soul spawn
+  // (enemy.spawnPending) which world.ts consumes — enemy.ts never spawns (world owns
+  // the enemies array + the global >20 live-skull cap).
+  | 'spawner'
+  // Arch-vile: chases fast and performs an instant, LOS-gated FIRE attack (flat 20 +
+  // 0..70 distance falloff, no projectile); resurrection is world-side.
+  | 'vile'
 
 export interface EnemyDef {
   readonly kind: EnemyKind
@@ -469,11 +493,17 @@ export interface EnemyDef {
   readonly projectileSpeed?: number
   /** float: render with a zOffset, altitude irrelevant on the 2D plane. */
   readonly flying?: boolean
-  /** Spectre — render flag (fuzz shader lands in a later phase; ok to ignore visually now). */
+  /** Spectre — render flag. world.ts sets SpriteInstance.fuzz from kind==='spectre'. */
   readonly fuzz?: boolean
   readonly reactionTics?: number
   /** Cyber/Spider bosses ignore radius/splash damage (honoured by world.applySplash). */
   readonly splashImmune?: boolean
+  /**
+   * Ordinary monster an Arch-vile may resurrect from its corpse (doomBehaviorSpec.md
+   * §3.1). True for the rank-and-file roster; false/omitted for bosses, viles, the
+   * barrel and the corpse-less Lost Soul (world's resurrection scan honours it).
+   */
+  readonly raisable?: boolean
 }
 
 export interface Enemy {
@@ -492,6 +522,16 @@ export interface Enemy {
   chargeVel?: Vec2
   /** Mancubus multi-shot index within the current volley. */
   volleyShot?: number
+  /**
+   * Pain Elemental: queued Lost-Soul spawns the world must consume this tick (the
+   * 'spawner' archetype sets it to 1 when in range + off cooldown; A_PainDie queues
+   * up to 3 on death). World spawns them (honouring the global >20 cap) and clears it.
+   */
+  spawnPending?: number
+  /** Arch-vile: a just-resurrected corpse this tick — guards against double-processing. */
+  justRaised?: boolean
+  /** Arch-vile: seconds until the next resurrection scan is allowed. */
+  raiseCooldown?: number
 }
 
 export interface Projectile {

@@ -56,7 +56,16 @@ const ENEMY_PROJECTILE: Partial<Record<EnemyKind, ProjectileKind>> = {
   mancubus: 'fatshot',
   arachnotron: 'aplasma',
   revenant: 'tracer',
+  // Cyberdemon fires a tight burst of splash rockets aimed at the player; it is
+  // splashImmune so its own blasts never stagger it (doomBehaviorSpec.md §3.1).
+  cyberdemon: 'rocket',
 }
+
+/** Arch-vile FIRE attack (doomBehaviorSpec.md §3.1): flat base 20 + 0..70 distance falloff. */
+const VILE_FIRE_BASE = 20
+const VILE_FIRE_FALLOFF = 70
+/** Falloff reaches 0 at this range (cells); inside it scales 70→0 with distance. */
+const VILE_FIRE_RANGE = 12
 
 /**
  * Static tuning per enemy kind, faithful to doomBehaviorSpec.md §3.1.
@@ -78,6 +87,7 @@ export const ENEMY_DEFS: Readonly<Record<EnemyKind, EnemyDef>> = {
     damageSides: 5,
     damageMul: 3,
     attackShots: 1,
+    raisable: true,
   },
   shotgunGuy: {
     kind: 'shotgunGuy',
@@ -93,6 +103,7 @@ export const ENEMY_DEFS: Readonly<Record<EnemyKind, EnemyDef>> = {
     damageSides: 5,
     damageMul: 3,
     attackShots: 3,
+    raisable: true,
   },
   chaingunner: {
     kind: 'chaingunner',
@@ -108,6 +119,7 @@ export const ENEMY_DEFS: Readonly<Record<EnemyKind, EnemyDef>> = {
     damageSides: 5,
     damageMul: 3,
     attackShots: 1,
+    raisable: true,
   },
   imp: {
     kind: 'imp',
@@ -127,6 +139,7 @@ export const ENEMY_DEFS: Readonly<Record<EnemyKind, EnemyDef>> = {
     meleeSides: 8,
     meleeMul: 3,
     projectileSpeed: 5.47,
+    raisable: true,
   },
   demon: {
     kind: 'demon',
@@ -142,6 +155,7 @@ export const ENEMY_DEFS: Readonly<Record<EnemyKind, EnemyDef>> = {
     damageSides: 10,
     damageMul: 4,
     attackShots: 1,
+    raisable: true,
   },
   spectre: {
     kind: 'spectre',
@@ -158,6 +172,7 @@ export const ENEMY_DEFS: Readonly<Record<EnemyKind, EnemyDef>> = {
     damageMul: 4,
     attackShots: 1,
     fuzz: true,
+    raisable: true,
   },
   lostSoul: {
     kind: 'lostSoul',
@@ -195,6 +210,7 @@ export const ENEMY_DEFS: Readonly<Record<EnemyKind, EnemyDef>> = {
     meleeMul: 10,
     projectileSpeed: 5.47,
     flying: true,
+    raisable: true,
   },
   hellKnight: {
     kind: 'hellKnight',
@@ -214,6 +230,7 @@ export const ENEMY_DEFS: Readonly<Record<EnemyKind, EnemyDef>> = {
     meleeSides: 8,
     meleeMul: 10,
     projectileSpeed: 8.2,
+    raisable: true,
   },
   baron: {
     kind: 'baron',
@@ -233,6 +250,7 @@ export const ENEMY_DEFS: Readonly<Record<EnemyKind, EnemyDef>> = {
     meleeSides: 8,
     meleeMul: 10,
     projectileSpeed: 8.2,
+    raisable: true,
   },
   mancubus: {
     kind: 'mancubus',
@@ -249,6 +267,7 @@ export const ENEMY_DEFS: Readonly<Record<EnemyKind, EnemyDef>> = {
     damageMul: 8,
     attackShots: 6,
     projectileSpeed: 10.94,
+    raisable: true,
   },
   arachnotron: {
     kind: 'arachnotron',
@@ -265,6 +284,7 @@ export const ENEMY_DEFS: Readonly<Record<EnemyKind, EnemyDef>> = {
     damageMul: 5,
     attackShots: 1,
     projectileSpeed: 13.67,
+    raisable: true,
   },
   revenant: {
     kind: 'revenant',
@@ -285,6 +305,85 @@ export const ENEMY_DEFS: Readonly<Record<EnemyKind, EnemyDef>> = {
     meleeMul: 6,
     meleeRange: 3.0,
     projectileSpeed: 5.47,
+    raisable: true,
+  },
+  // Pain Elemental (PAIN, doomBehaviorSpec.md §3.1): HP400, painChance 0.50, floats,
+  // archetype 'spawner'. No direct attack — when in range + off cooldown it SIGNALS a
+  // skull spawn (enemy.spawnPending); world spawns one charging Lost Soul (global >20
+  // cap) and 3 in a ring on death. Not raisable (a boss-tier breeder).
+  painElemental: {
+    kind: 'painElemental',
+    maxHealth: 400,
+    speed: 4.38,
+    radius: 0.48,
+    attackRange: 12,
+    attackCooldown: 2.0,
+    painChance: 0.5,
+    scale: 1.35,
+    archetype: 'spawner',
+    ranged: false,
+    damageSides: 1,
+    damageMul: 1,
+    attackShots: 0,
+    flying: true,
+  },
+  // Arch-vile (VILE, doomBehaviorSpec.md §3.1): HP700, painChance 10/256≈0.039 (almost
+  // never flinches), speed ≈4.10 cells/s, archetype 'vile'. FIRE attack is instant +
+  // LOS-gated (flat 20 + 0..70 falloff), handled in updateEnemy; resurrection is
+  // world-side. NOT raisable / NOT splash-immune.
+  archvile: {
+    kind: 'archvile',
+    maxHealth: 700,
+    speed: 4.1,
+    radius: 0.31,
+    attackRange: 12,
+    attackCooldown: 1.8,
+    painChance: 0.039,
+    scale: 1.2,
+    archetype: 'vile',
+    ranged: false,
+    damageSides: 1,
+    damageMul: 1,
+    attackShots: 1,
+  },
+  // Cyberdemon (CYBR, doomBehaviorSpec.md §3.1): HP4000, painChance 20/256≈0.078,
+  // radius 40u≈0.63, archetype 'projectile' firing 3 rockets/cycle (ENEMY_PROJECTILE
+  // → rocket). splashImmune so its own blasts never stagger it. A boss (counts as a kill).
+  cyberdemon: {
+    kind: 'cyberdemon',
+    maxHealth: 4000,
+    speed: 2.92,
+    radius: 0.63,
+    attackRange: 18,
+    attackCooldown: 2.0,
+    painChance: 0.078,
+    scale: 1.7,
+    archetype: 'projectile',
+    ranged: true,
+    damageSides: 8,
+    damageMul: 20,
+    attackShots: 3,
+    projectileSpeed: 10.94,
+    splashImmune: true,
+  },
+  // Spider Mastermind (SPID, doomBehaviorSpec.md §3.1): HP3000, painChance 40/256≈0.156,
+  // radius 128u = 2.0 cells (largest in game), archetype 'hitscan' firing a 3-bullet
+  // burst (damage 5/10/15 = sides 3 × mul 5). splashImmune. A boss (counts as a kill).
+  spiderMastermind: {
+    kind: 'spiderMastermind',
+    maxHealth: 3000,
+    speed: 2.19,
+    radius: 2.0,
+    attackRange: 18,
+    attackCooldown: 0.3,
+    painChance: 0.156,
+    scale: 2.0,
+    archetype: 'hitscan',
+    ranged: false,
+    damageSides: 3,
+    damageMul: 5,
+    attackShots: 3,
+    splashImmune: true,
   },
   // Explosive barrel (MT_BARREL, doomBehaviorSpec.md §3.5): HP 20, radius 10u≈0.16,
   // archetype 'inert' (never moves/attacks), painChance 0 (never flinches). The world
@@ -522,6 +621,14 @@ function attack(
     case 'charger':
       beginCharge(enemy, player, def)
       return
+    case 'spawner':
+      // Pain Elemental: SIGNAL a Lost-Soul spawn for world.ts to consume (world owns
+      // the enemies array + the global >20 live-skull cap). No direct damage.
+      enemy.spawnPending = (enemy.spawnPending ?? 0) + 1
+      return
+    case 'vile':
+      vileFireAttack(enemy, player, scene, rng)
+      return
     default:
       // melee: bite when in range.
       if (distance <= meleeReach(def) || distance <= def.attackRange) {
@@ -556,6 +663,28 @@ function hitscanAttack(
     }
     damagePlayer(player, rollDamage(rng, def.damageSides, def.damageMul))
   }
+}
+
+/**
+ * Arch-vile FIRE attack (doomBehaviorSpec.md §3.1): instant, NOT a projectile. On the
+ * firing tick we re-check LOS; if it is broken the attack deals NOTHING (the classic
+ * "duck behind a wall the instant it fires" escape). Otherwise the player takes a flat
+ * VILE_FIRE_BASE (20) plus a 0..VILE_FIRE_FALLOFF (70) distance-falloff bonus (≈20..90
+ * total), and we fake the canonical upward momz launch as an extra screen kick by
+ * topping up the player's damageFlash (the engine reads it as a HUD/screen tint).
+ */
+function vileFireAttack(enemy: Enemy, player: Player, scene: SceneQuery, rng: Rng): void {
+  if (!lineOfSight(scene, enemy.pos, player.pos)) {
+    return
+  }
+  void rng // the vile fire is non-randomized (flat 20 + deterministic falloff)
+  const toPlayer = sub(player.pos, enemy.pos)
+  const distance = Math.hypot(toPlayer.x, toPlayer.y)
+  const near = clamp(1 - distance / VILE_FIRE_RANGE, 0, 1)
+  const damage = VILE_FIRE_BASE + Math.round(VILE_FIRE_FALLOFF * near)
+  damagePlayer(player, damage)
+  // Fake the +momz upward thrust as a screen kick (no Z axis on the 2D plane).
+  player.damageFlash = 1
 }
 
 /**
@@ -595,6 +724,18 @@ function beginCharge(enemy: Enemy, player: Player, def: EnemyDef): void {
   const dir = normalize(sub(player.pos, enemy.pos))
   enemy.charging = true
   enemy.chargeVel = scale(dir, def.projectileSpeed ?? 0)
+}
+
+/**
+ * Launch a (freshly Pain-Elemental-spawned) Lost Soul straight into its charge at the
+ * player, reusing the charger dash state. Exported so world.ts — which owns the
+ * enemies array and the global live-skull cap — can immediately set a spit skull
+ * dashing without re-implementing the charge maths (doomBehaviorSpec.md §3.1).
+ */
+export function startLostSoulCharge(skull: Enemy, player: Player): void {
+  skull.state = 'attack'
+  facePlayer(skull, player.pos)
+  beginCharge(skull, player, enemyDef(skull.kind))
 }
 
 /**
