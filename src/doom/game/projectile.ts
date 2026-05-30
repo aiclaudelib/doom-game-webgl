@@ -33,13 +33,16 @@ const HOMING_PERIOD = 7
  * radiusCells = the canonical missile body radius (u ÷ 64) from §3.3 — the planar
  * collision in updateProjectile uses the tuned PROJECTILE_RADIUS/ENEMY_HIT_RADIUS
  * constants, so this records the physical radius for reference/splash sizing.
- * splashCells (when set) = a radial blast on impact. sprite = atlas billboard prefix.
+ * splashCells (when set) = a radial blast on impact (the on/off gate). splashPeak = the
+ * epicentre damage + falloff distance in map units (canon P_RadiusAttack uses 128); omitted
+ * ⇒ the splashDamage default of 128. sprite = atlas billboard prefix.
  */
 export interface ProjectileDef {
   readonly speed: number
   readonly base: number
   readonly radiusCells: number
   readonly splashCells?: number
+  readonly splashPeak?: number
   readonly homing?: boolean
   readonly bfgSpray?: boolean
   readonly sprite: string
@@ -52,7 +55,14 @@ export const PROJECTILE_DEFS: Readonly<Record<ProjectileKind, ProjectileDef>> = 
   fatshot: { speed: 10.94, base: 8, radiusCells: 0.094, sprite: 'MANF' },
   tracer: { speed: 5.47, base: 10, radiusCells: 0.172, homing: true, sprite: 'FATB' },
   aplasma: { speed: 13.67, base: 5, radiusCells: 0.203, sprite: 'APLS' },
-  rocket: { speed: 10.94, base: 20, radiusCells: 0.172, splashCells: 2.0, sprite: 'MISL' },
+  rocket: {
+    speed: 10.94,
+    base: 20,
+    radiusCells: 0.172,
+    splashCells: 2.0,
+    splashPeak: 128,
+    sprite: 'MISL',
+  },
   plasma: { speed: 13.67, base: 5, radiusCells: 0.203, sprite: 'PLSS' },
   bfg: { speed: 13.67, base: 100, radiusCells: 0.203, bfgSpray: true, sprite: 'BFS1' },
 }
@@ -66,7 +76,8 @@ export function projectileDef(kind: ProjectileKind): ProjectileDef {
  * Create a projectile whose velocity is the normalized direction × `speed`
  * (cells/s). `speed` defaults to PROJECTILE_SPEED so existing callers are
  * unchanged; enemies pass their canonical missile speed. Homing kinds (tracer)
- * carry a steer flag + step counter; BFG carries the frozen firing origin/angle.
+ * carry a steer flag + step counter; BFG freezes its firing ANGLE (the spray re-reads the
+ * shooter's live position).
  */
 export function spawnProjectile(
   kind: ProjectileKind,
@@ -96,7 +107,8 @@ export function spawnProjectile(
     proj.steps = 0
   }
   if (def.bfgSpray === true) {
-    proj.originPos = { x: pos.x, y: pos.y }
+    // Freeze the fire-time facing so the spray fan ignores live player turning (read in
+    // world.fireBfgSpray). The origin POINT is not frozen — the spray re-reads player.pos.
     proj.originAngle = Math.atan2(dir.y, dir.x)
   }
   return proj

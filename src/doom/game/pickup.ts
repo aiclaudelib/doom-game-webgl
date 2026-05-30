@@ -22,6 +22,7 @@ import {
   giveWeapon,
   startPowerup,
 } from '~/doom/game/player'
+import { maybeAutoSwitch } from '~/doom/game/weapon'
 
 /** Overheal / over-armor ceiling for bonuses & spheres (hardcoded 200 in Doom). */
 const OVERHEAL_MAX = 200
@@ -174,6 +175,10 @@ function applyAmmoPickup(player: Player, config: AmmoPickupConfig): PickupResult
 
 function applyWeaponPickup(player: Player, config: WeaponPickupConfig): PickupResult {
   const newlyOwned = giveWeapon(player, config.weapon)
+  if (newlyOwned) {
+    // Auto-switch to a freshly-picked weapon when it ranks at least as high as the current.
+    maybeAutoSwitch(player, config.weapon)
+  }
   // Melee weapons (chainsaw) carry no ammo — taken iff newly owned.
   const ammoKind = config.ammo
   if (ammoKind === null) {

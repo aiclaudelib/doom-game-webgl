@@ -1,7 +1,7 @@
 // Pure combat geometry: line-of-sight visibility and hitscan ray marching.
 // No entity-module imports — operates only on the SceneQuery + enemy snapshots.
 
-import { ENEMY_HIT_RADIUS } from '~/doom/config'
+import { ENEMY_HALF_HEIGHT, ENEMY_HIT_RADIUS } from '~/doom/config'
 import type { Enemy, HitscanResult, SceneQuery, Vec2 } from '~/doom/types'
 import { fromAngle } from '~/doom/core/vec'
 
@@ -84,6 +84,11 @@ export function lineOfSight(scene: SceneQuery, from: Vec2, to: Vec2): boolean {
  * wall along the ray and the nearest non-dead enemy whose centre is within
  * ENEMY_HIT_RADIUS of the ray; an enemy only counts when it is nearer than that
  * wall. Returns the closest impact.
+ *
+ * `slope` is an optional vertical rise/run for the shot (0 = level, the default for
+ * every non-SSG caller). With a non-zero slope a far target may be cleared vertically:
+ * the gun's vertical rise at the target's distance must stay within ENEMY_HALF_HEIGHT.
+ * `slope===0` ⇒ the gate always passes ⇒ byte-identical to the old 5-arg behaviour.
  */
 export function hitscan(
   scene: SceneQuery,
@@ -91,6 +96,7 @@ export function hitscan(
   origin: Vec2,
   angle: number,
   range: number,
+  slope = 0,
 ): HitscanResult {
   const dir = fromAngle(angle)
 
@@ -117,8 +123,13 @@ export function hitscan(
     const perpY = relY - dir.y * along
     const perp = Math.hypot(perpX, perpY)
     if (perp <= ENEMY_HIT_RADIUS) {
-      bestIndex = i
-      bestDist = along
+      // Vertical gate: the shot's rise at the enemy's distance must clear the target's
+      // half-height. slope===0 ⇒ vertOffset===0 ⇒ always satisfied (identical legacy path).
+      const vertOffset = Math.abs(slope) * along
+      if (vertOffset <= ENEMY_HALF_HEIGHT) {
+        bestIndex = i
+        bestDist = along
+      }
     }
   }
 
@@ -132,24 +143,33 @@ export function hitscan(
 }
 
 /**
- * Chebyshev splash falloff (Doom A_Explode / P_RadiusAttack). Distance is measured
- * cell-wise as max(|dx|,|dy|) then converted to map units (×64); the target's own
- * radius (in cells, ×64) is subtracted so big targets take full damage closer in.
- * Result: 128 at the centre, fading linearly, 0 at or beyond 128 units. Pure.
+ * Splash falloff (Doom A_Explode / P_RadiusAttack). Distance is measured cell-wise then
+ * converted to map units (×64); the target's own radius (in cells, ×64) is subtracted so
+ * big targets take full damage closer in. Result: `peak` at the centre, fading linearly,
+ * 0 at or beyond `peak` units. `peak` defaults to 128, so the 3-arg form is byte-identical
+ * to the original; the rocket threads its own `splashPeak` through applySplash so the magic
+ * 128 is data-driven (a smaller peak shrinks the blast radius). Pure.
+ *
+ * SANCTIONED DEVIATION (weaponPlan §1.4 / §5): canon `P_RadiusAttack` measures distance with
+ * the octagonal `P_AproxDistance ((max + min) / 2)` and a fixed peak 128; we use Chebyshev
+ * `max(|dx|,|dy|)·64 − radius·64`. The peak, the `peak − dist` falloff, the LOS gate, the
+ * shooter self-damage, and the Cyberdemon/Spider splash immunity are all preserved (those live
+ * in world.applySplash) — only the distance metric is the cheaper Chebyshev, kept by design.
  */
 export function splashDamage(
   centerCells: Vec2,
   targetCells: Vec2,
   targetRadiusCells: number,
+  peak = 128,
 ): number {
   const dx = Math.abs(targetCells.x - centerCells.x)
   const dy = Math.abs(targetCells.y - centerCells.y)
   const distUnits = Math.max(dx, dy) * 64 - targetRadiusCells * 64
-  const dmg = 128 - distUnits
+  const dmg = peak - distUnits
   if (dmg <= 0) {
     return 0
   }
-  return dmg > 128 ? 128 : dmg
+  return dmg > peak ? peak : dmg
 }
 
 /** DDA march returning the distance to the first solid cell, clamped to `range`. */

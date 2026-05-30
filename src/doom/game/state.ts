@@ -21,6 +21,15 @@ export function defaultBindings(): KeyBindings {
     run: 'ShiftLeft',
     use: 'KeyE',
     fire: 'Space',
+    weapon1: 'Digit1',
+    weapon2: 'Digit2',
+    weapon3: 'Digit3',
+    weapon4: 'Digit4',
+    weapon5: 'Digit5',
+    weapon6: 'Digit6',
+    weapon7: 'Digit7',
+    weaponNext: 'BracketRight',
+    weaponPrev: 'BracketLeft',
   }
 }
 

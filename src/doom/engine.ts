@@ -73,6 +73,12 @@ export class DoomEngine {
   private rebindHooked = false
   private lastClientW = 0
   private lastClientH = 0
+  /**
+   * Chainsaw idle-buzz throttle (engine-only — keeps the deterministic sim audio-free).
+   * Seconds until the next idle buzz may play; we re-trigger the loop sound on a cadence
+   * while the saw stays idle, and reset the moment idling stops so the buzz resumes promptly.
+   */
+  private sawIdleCooldown = 0
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas
@@ -220,7 +226,7 @@ export class DoomEngine {
     }
 
     const ev = world.update(input, dt)
-    this.playEventSounds(ev)
+    this.playEventSounds(ev, dt)
 
     if (ev.playerDead) {
       this.mode = 'dead'
@@ -239,13 +245,29 @@ export class DoomEngine {
     }
   }
 
+  /** Re-trigger the chainsaw idle buzz roughly every this many seconds while idling. */
+  private static readonly SAW_IDLE_PERIOD = 0.18
+
   /** Translate world events into one-shot sound effects. */
-  private playEventSounds(ev: WorldEvents): void {
+  private playEventSounds(ev: WorldEvents, dt: number): void {
     if (ev.fired !== null) {
-      playSfx(this.audio, ev.fired)
+      // The chainsaw's firing sound is the gritty bite, not the generic 'chainsaw' tone.
+      playSfx(this.audio, ev.fired === 'chainsaw' ? 'sawHit' : ev.fired)
     }
     if (ev.dryFired) {
       playSfx(this.audio, 'noAmmo')
+    }
+    // Idle buzz: looped on a throttle while the saw is equipped + idle. The latch lives
+    // here (engine-side) so world.update never carries audio state. Reset the moment idling
+    // stops so the buzz restarts immediately the next time the saw goes idle.
+    if (ev.weaponIdle === 'chainsaw') {
+      this.sawIdleCooldown -= dt
+      if (this.sawIdleCooldown <= 0) {
+        playSfx(this.audio, 'sawIdle')
+        this.sawIdleCooldown = DoomEngine.SAW_IDLE_PERIOD
+      }
+    } else {
+      this.sawIdleCooldown = 0
     }
     // Death and hurt are independent across enemies — a death and a separate flinch can both
     // happen in one tick, so these must NOT be chained with else-if.
@@ -510,7 +532,7 @@ export class DoomEngine {
       const fullBright = world.player.lightAmpTimer > 0
       renderWorld(this.fb, world, world.camera, this.assets, this.depth, fullBright)
       renderSprites(this.fb, world.buildSprites(), world.camera, this.depth, fullBright)
-      renderWeaponSprite(this.fb, world.player, this.assets)
+      renderWeaponSprite(this.fb, world.player, this.assets, this.spriteAtlas)
       renderHud(this.fb, world.player, world.stats)
       renderFlash(this.fb, world.player)
       if (this.mode === 'paused') {

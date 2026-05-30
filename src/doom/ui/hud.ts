@@ -21,7 +21,16 @@ import type {
 } from '~/doom/types'
 import type { Rgb } from '~/doom/core/color'
 import { pal } from '~/doom/core/color'
-import { blitTexture, drawText, drawTextCentered, fillRect } from '~/doom/engine/framebuffer'
+import {
+  blitTexture,
+  blitTextureBright,
+  drawText,
+  drawTextCentered,
+  fillRect,
+} from '~/doom/engine/framebuffer'
+import type { SpriteAtlas } from '~/doom/engine/sprites/spriteAtlas'
+import { WEAPON_CHAINS } from '~/doom/game/weaponStates'
+import { letterOf, viewmodelBob, viewmodelDrawPos } from '~/doom/ui/viewmodel'
 import type { WorldStats } from '~/doom/ui/widgets'
 import { drawBar, drawPanel } from '~/doom/ui/widgets'
 
@@ -145,38 +154,89 @@ function renderPowerups(fb: Framebuffer, player: Player): void {
   }
 }
 
-/** Pick the right weapon texture for the player's animation phase. */
+/** Pick the procedural-fallback weapon texture for the player's animation phase. */
 function weaponTexture(player: Player, assets: Assets): Texture {
   const visual = assets.weapon[player.currentWeapon]
   if (player.weaponState === 'firing' && visual.fire.length > 0) {
+    // Headless/no-atlas fallback only: indexing the raw sprite-letter (weaponFrame) % fire.length
+    // is an INCIDENTAL mapping — it just needs to flip between the procedural fire frames while
+    // firing. The atlas path (renderWeaponSprite) is the real animation; this never ships.
     const frame = visual.fire[player.weaponFrame % visual.fire.length]
     return frame ?? visual.idle
   }
   return visual.idle
 }
 
-/** First-person weapon centred above the HUD with a subtle idle/walk bob. */
-export function renderWeaponSprite(fb: Framebuffer, player: Player, assets: Assets): void {
+/** Headless / no-atlas path: the legacy procedural viewmodel, centred above the HUD. */
+function renderProceduralWeapon(fb: Framebuffer, player: Player, assets: Assets): void {
   const tex = weaponTexture(player, assets)
   const scale = 2
-
-  // Gentle horizontal/vertical bob driven by the weapon timer; firing nudges the gun
-  // upward for a touch of recoil. Deterministic — no wall-clock source.
-  const bobPhase = player.weaponTimer * 6
-  const bobX = Math.round(Math.sin(bobPhase) * 2)
-  const bobY = Math.round(Math.abs(Math.cos(bobPhase)) * 2)
+  const bob = viewmodelBob(player.weaponState, player.bob, player.bobPhase)
   const recoil = player.weaponState === 'firing' ? -3 : 0
 
   const drawW = tex.width * scale
-  const dx = Math.round((VIEW_W - drawW) / 2) + bobX
-  const dy = VIEW_H - tex.height * scale + bobY + recoil
+  const dx = Math.round((VIEW_W - drawW) / 2) + Math.round(bob.x)
+  const dy = VIEW_H - tex.height * scale + Math.round(bob.y) + recoil
 
   blitTexture(fb, tex, dx, dy, scale)
 }
 
+/**
+ * Atlas-backed first-person viewmodel: resolve the current gun-layer frame from the active
+ * weapon's psprite chain, blit it via the §B3 full-screen-relative-offset convention, then
+ * overlay the bright muzzle-flash frame at the SAME anchor (bob/slide) so it stays glued to
+ * the barrel. Falls back to the procedural look when no atlas is loaded (jsdom/headless).
+ */
+export function renderWeaponSprite(
+  fb: Framebuffer,
+  player: Player,
+  assets: Assets,
+  atlas: SpriteAtlas | null,
+): void {
+  if (atlas === null) {
+    renderProceduralWeapon(fb, player, assets)
+    return
+  }
+
+  const chain = WEAPON_CHAINS[player.currentWeapon]
+  const bob = viewmodelBob(player.weaponState, player.bob, player.bobPhase)
+
+  const gun = chain.states[player.pspIndex]
+  if (gun !== undefined) {
+    const ref = atlas.actorFrame(gun.sprite, letterOf(gun.frame), 1)
+    if (ref !== null) {
+      const { x, y } = viewmodelDrawPos(ref, bob.x, bob.y, player.pspSy)
+      blitTexture(fb, ref.tex, x, y, 1)
+    }
+  }
+
+  if (player.flashIndex !== -1) {
+    const flash = chain.states[player.flashIndex]
+    if (flash !== undefined) {
+      const fref = atlas.actorFrame(flash.sprite, letterOf(flash.frame), 1)
+      if (fref !== null) {
+        // Same anchor as the gun (bob + pspSy) — the flash rides the barrel.
+        const { x, y } = viewmodelDrawPos(fref, bob.x, bob.y, player.pspSy)
+        blitTextureBright(fb, fref.tex, x, y, 1)
+      }
+    }
+  }
+}
+
+/** Per muzzle-flash light level (player.extralight 0/1/2), a subtle additive white tint over
+ *  the viewport — Doom's `extralight` screen brighten while a shot's flash plays. Kept low so
+ *  it never washes out the frame or blanks the canvas. */
+const EXTRALIGHT_ALPHA: readonly number[] = [0, 10, 20]
+
 /** Full-viewport translucent tints: red on damage, gold on pickup, scaled by player flashes.
  *  Invulnerability adds a steady pale tint (a stand-in for Doom's inverse palette) while active. */
 export function renderFlash(fb: Framebuffer, player: Player): void {
+  // Muzzle-flash screen light: a faint additive brighten while extralight>0 (driven by the
+  // weapon's flash-layer light1/light2 actions). Composited UNDER the damage/pickup tints.
+  const extraAlpha = EXTRALIGHT_ALPHA[Math.min(2, Math.max(0, player.extralight))] ?? 0
+  if (extraAlpha > 0) {
+    fillRect(fb, 0, 0, VIEW_W, VIEW_H, pal('white'), extraAlpha)
+  }
   if (player.damageFlash > 0) {
     const a = Math.round(Math.min(1, player.damageFlash) * 140)
     if (a > 0) {

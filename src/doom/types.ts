@@ -387,6 +387,7 @@ export interface InputFrame {
   readonly use: boolean // use/open-door edge
   readonly nav: NavEdge
   readonly weaponSlot: number // 0 = none this frame, else 1..7
+  readonly weaponCycle: -1 | 0 | 1 // -1 = previous, +1 = next, 0 = none this frame
   /** Pointer position in render-buffer coordinates, and click edge — for menu mousing. */
   readonly pointerX: number
   readonly pointerY: number
@@ -404,6 +405,15 @@ export interface KeyBindings {
   run: string
   use: string
   fire: string
+  weapon1: string
+  weapon2: string
+  weapon3: string
+  weapon4: string
+  weapon5: string
+  weapon6: string
+  weapon7: string
+  weaponNext: string
+  weaponPrev: string
 }
 
 export type BindingAction = keyof KeyBindings
@@ -425,30 +435,89 @@ export interface Settings {
 // Entity definitions (static tuning tables) and live entity state
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** How tryFire delivers damage; drives the branch in game/weapon.ts. */
+/** How the fire action delivers damage; drives the branch in game/weapon.ts. */
 export type WeaponFireMode = 'melee' | 'hitscan' | 'projectile'
+
+/** 35Hz psprite tic rate (Doom info.c). The sim runs at 60Hz; tics are derived. */
+export const TICRATE = 35
+export const SECONDS_PER_TIC = 1 / TICRATE
+
+/** A_* action pointers dispatched by the psprite tic engine. null = pure animation frame. */
+export type PspAction =
+  | 'ready'
+  | 'lower'
+  | 'raise'
+  | 'reFire'
+  | 'firePistol'
+  | 'fireShotgun'
+  | 'fireShotgun2'
+  | 'fireCGun'
+  | 'fireMissile'
+  | 'firePlasma'
+  | 'fireBFG'
+  | 'punch'
+  | 'saw'
+  | 'gunFlash'
+  | 'bfgSound'
+  | 'checkReload'
+  | 'openShotgun2'
+  | 'loadShotgun2'
+  | 'closeShotgun2'
+  | 'light0'
+  | 'light1'
+  | 'light2'
+
+/** One psprite state: which sprite frame, how many 35Hz tics, bright flag, action, and next index. */
+export interface WeaponPspState {
+  readonly sprite: string // e.g. 'PISG' (gun layer) or 'PISF' (flash layer)
+  readonly frame: number // 0 = letter 'A', 1 = 'B', … (letterOf(frame)=String.fromCharCode(65+frame))
+  readonly tics: number // duration in 35Hz tics; 0 = same-tic fallthrough; <0 forbidden
+  readonly bright: boolean // fullbright (flash/muzzle)
+  readonly action: PspAction | null
+  readonly next: number // index into the weapon's states[]; self-index for 1-tic heads
+}
+
+/** Per-weapon psprite state table + named entry indices. flash = -1 when the weapon has no flash layer. */
+export interface WeaponStateChain {
+  readonly up: number
+  readonly down: number
+  readonly ready: number
+  readonly atk: number
+  readonly flash: number // index of the flash-layer head, or -1
+  readonly states: readonly WeaponPspState[]
+}
+
+export interface DamageSpec {
+  readonly sides: number
+  readonly mul: number
+  readonly berserkBoost?: boolean
+}
+
+export interface SpreadSpec {
+  readonly horizontal: number
+  readonly vertical?: number
+}
 
 export interface WeaponDef {
   readonly kind: WeaponKind
+  readonly slot: number // 1..7 selection key — source of truth
   readonly ammo: AmmoKind | null // null = melee / costs nothing
-  /** Per pellet/shot dice: damage = (1 + floor(rng*damageSides)) * damageMul. */
-  readonly damageSides: number
-  readonly damageMul: number
-  readonly pellets: number // 1 (pistol) .. 20 (super shotgun)
-  readonly spread: number // half-angle in radians applied per pellet
-  readonly fireDelay: number // seconds between shots
-  readonly range: number // hitscan reach in tiles (full-level for guns)
-  readonly automatic: boolean // fires while held (chaingun/plasma)
-  readonly slot: number // 1..7 selection key
+  readonly ammoPerShot: number // SSG 2, BFG 40, melee 0
   readonly fireMode: WeaponFireMode
-  /** Ammo consumed per trigger pull (SSG 2, bfg 40, melee 0). */
-  readonly ammoPerShot: number
-  /** Projectile to spawn for fireMode 'projectile'. */
+  readonly pellets: number // 1 (pistol) .. 20 (super shotgun)
+  readonly automatic: boolean // fires while held (chaingun/plasma)
+  readonly damage: DamageSpec
+  readonly spread: SpreadSpec
+  readonly range: number // hitscan reach in tiles (full-level for guns)
   readonly projectileKind?: ProjectileKind
-  /** SSG only: extra random vertical spread modelled as a per-pellet hit-chance miss. */
-  readonly verticalSpread?: number
-  /** Fist berserk: multiply melee damage by 10 when the player is berserk. */
-  readonly berserkBoost?: boolean
+  /** Phase C hitscan detail (present now, consumed in Phase C). */
+  readonly spreadShift?: number // 18 pistol/chaingun/shotgun, 19 SSG
+  readonly firstShotAccurate?: boolean // pistol/chaingun
+  readonly verticalSlopeShift?: number // SSG = 5
+  /** Phase D. */
+  readonly meleePull?: boolean // chainsaw only
+  readonly chain: WeaponStateChain
+  readonly autoSwitchRank: number
 }
 
 /**
@@ -562,8 +631,8 @@ export interface Projectile {
   homing?: boolean
   /** Fixed 60Hz step counter so homing turns only on the canonical cadence. */
   steps?: number
-  /** BFG: frozen firing origin + angle so the spray ignores live player turning. */
-  originPos?: Vec2
+  /** BFG: frozen fire-time facing so the spray fan ignores live player turning (the spray
+   *  origin POINT re-reads the shooter's live position). */
   originAngle?: number
   /**
    * Infighting (doomBehaviorSpec.md §4 / §5 #20): the enemy that fired this missile (so a
@@ -597,7 +666,7 @@ export interface Prop {
   animTimer: number
 }
 
-export type WeaponState = 'ready' | 'firing' | 'switching'
+export type WeaponState = 'ready' | 'firing' | 'raising' | 'lowering'
 
 export interface Player {
   pos: Vec2
@@ -624,8 +693,22 @@ export interface Player {
   /** Backpack claimed: maxAmmo already doubled, later backpacks only top up clips. */
   hasBackpack: boolean
   weaponState: WeaponState
-  weaponTimer: number // seconds left in the current weapon-state phase
-  weaponFrame: number // index into the firing animation
+  /** Derived current gun-layer frame letter index (= chain.states[pspIndex].frame); read by the
+   *  procedural HUD fallback. Written by the tic engine whenever pspIndex changes. */
+  weaponFrame: number
+  /** Psprite tic cursor (35Hz state machine, src/doom/game/weapon.ts). */
+  pspIndex: number // current gun-layer state index into currentWeapon's chain.states
+  pspTics: number // tics remaining in the current gun-layer state
+  flashIndex: number // current flash-layer state index, -1 = no flash active
+  flashTics: number // tics remaining in flash state
+  refireCount: number // A_ReFire counter; 0 = first shot
+  pspSy: number // weapon Y slide, 32 (WEAPONTOP) .. 128 (WEAPONBOTTOM)
+  ticAccumulator: number // seconds carried toward the next 35Hz tic
+  extralight: number // 0/1/2 muzzle-flash screen light (consumed by hud.renderFlash)
+  attackLatch: boolean // edge/held attack latched until consumed by a ready/refire tic
+  bulletSlope: number // always 0 (Phase C autoaim hook); SSG perturbs per-pellet locally
+  bob: number // 0..1 smoothed movement speed (Phase B)
+  bobPhase: number // bob oscillator phase (Phase B)
   /** Recent damage flash 0..1 and pickup flash 0..1, for HUD/screen tint; decays over time. */
   damageFlash: number
   pickupFlash: number

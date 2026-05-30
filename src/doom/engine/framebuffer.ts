@@ -195,13 +195,19 @@ export function drawTextCentered(
   drawText(fb, text, Math.floor(cx - w / 2), y, c, step)
 }
 
-/** Blit a texture at integer scale with alpha-test (skip fully transparent texels). */
-export function blitTexture(
+/**
+ * Shared alpha-test blit core for the first-person viewmodel layers. Walks every texel
+ * of `tex` at integer `scale`, culls fully transparent ones (alpha < 128), and hands each
+ * surviving texel's colour + destination to `write`. `blitTexture`/`blitTextureBright`
+ * differ ONLY in that callback — the loop/scale/cull logic lives here once (no dup).
+ */
+function blitTexels(
   fb: Framebuffer,
   tex: Texture,
   dx: number,
   dy: number,
-  scale = 1,
+  scale: number,
+  write: (fb: Framebuffer, px: number, py: number, c: Rgb, alpha: number) => void,
 ): void {
   const step = Math.max(1, Math.floor(scale))
   const data = tex.data
@@ -217,11 +223,50 @@ export function blitTexture(
       const py = y0 + ty * step
       for (let sy = 0; sy < step; sy++) {
         for (let sx = 0; sx < step; sx++) {
-          setPixel(fb, px + sx, py + sy, c, alpha)
+          write(fb, px + sx, py + sy, c, alpha)
         }
       }
     }
   }
+}
+
+/** Bounds-checked additive write: accumulate `c * boost` toward white over the destination. */
+function addPixel(fb: Framebuffer, x: number, y: number, c: Rgb, boost: number): void {
+  if (x < 0 || y < 0 || x >= fb.width || y >= fb.height) return
+  const o = (y * fb.width + x) * 4
+  const data = fb.data
+  data[o] = Math.min(255, (data[o] ?? 0) + c[0] * boost)
+  data[o + 1] = Math.min(255, (data[o + 1] ?? 0) + c[1] * boost)
+  data[o + 2] = Math.min(255, (data[o + 2] ?? 0) + c[2] * boost)
+  data[o + 3] = 255
+}
+
+/** Blit a texture at integer scale with alpha-test (skip fully transparent texels). */
+export function blitTexture(
+  fb: Framebuffer,
+  tex: Texture,
+  dx: number,
+  dy: number,
+  scale = 1,
+): void {
+  blitTexels(fb, tex, dx, dy, scale, setPixel)
+}
+
+/**
+ * Additive muzzle-flash blit: same alpha-test loop as `blitTexture`, but each surviving
+ * texel is ADDED to the destination (clamped to white) instead of overwriting it, so the
+ * flash brightens whatever sits behind the gun. `boost` scales the added light (1 = raw add).
+ * A transparent texel (alpha < 128) is culled, leaving the background untouched.
+ */
+export function blitTextureBright(
+  fb: Framebuffer,
+  tex: Texture,
+  dx: number,
+  dy: number,
+  scale = 1,
+  boost = 1,
+): void {
+  blitTexels(fb, tex, dx, dy, scale, (b, px, py, c) => addPixel(b, px, py, c, boost))
 }
 
 /**

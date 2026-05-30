@@ -167,11 +167,11 @@ describe('requestWeapon', () => {
     expect(player.pendingWeapon).toBeNull()
     expect(player.weaponState).toBe('ready')
 
-    // After acquiring it, the switch starts.
+    // After acquiring it, the switch starts: the current weapon begins lowering.
     giveWeapon(player, 'shotgun')
     requestWeapon(player, 'shotgun')
     expect(player.pendingWeapon).toBe('shotgun')
-    expect(player.weaponState).toBe('switching')
+    expect(player.weaponState).toBe('lowering')
   })
 
   it('does not re-switch to the already-equipped weapon', () => {

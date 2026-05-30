@@ -39,6 +39,9 @@ export const MAX_ARMOR = 100
 
 /** Interaction & combat radii / ranges (world tiles), and projectile speed (tiles/sec). */
 export const ENEMY_HIT_RADIUS = 0.42 // generous hitscan radius around an enemy centre
+// Half the assumed enemy mobj height (≈56u → ~0.44 cells); the vertical gate that lets a
+// sloped pellet (SSG) clear a distant target. Engine-chosen / pinned by test, not id canon.
+export const ENEMY_HALF_HEIGHT = 0.44
 export const PROJECTILE_RADIUS = 0.22
 export const PICKUP_RADIUS = 0.5 // distance at which the player grabs a pickup
 export const USE_RANGE = 1.25 // reach for opening doors with the use key

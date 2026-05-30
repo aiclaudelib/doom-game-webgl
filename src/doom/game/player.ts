@@ -10,7 +10,7 @@ import {
   TURN_SPEED,
 } from '~/doom/config'
 import { clamp, normalizeAngle } from '~/doom/core/math'
-import { add, clone, fromAngle, rotate, scale } from '~/doom/core/vec'
+import { add, clone, fromAngle, length, rotate, scale } from '~/doom/core/vec'
 import type {
   AmmoKind,
   ArmorType,
@@ -47,6 +47,18 @@ const POWERUP_SECONDS: Readonly<Record<PowerupKind, number>> = {
 }
 /** Invulnerability blocks everything below this (telefrag still passes). */
 const INVULN_THRESHOLD = 1000
+
+/**
+ * View-bob model (Phase B). `player.bob` is a 0..1 smoothed movement-speed used as the bob
+ * amplitude in the renderer. While standing it decays geometrically by BOB_DECAY per frame
+ * (snapping to 0 below BOB_EPS so the gun fully settles); while moving it ramps toward the
+ * normalized step speed by BOB_RAMP. `bobPhase` advances by BOB_PHASE_RATE rad/s only while
+ * moving, so a stationary player has a frozen oscillator (bobX = bobY = 0).
+ */
+const BOB_DECAY = 0.8
+const BOB_RAMP = 0.35
+const BOB_EPS = 0.001
+const BOB_PHASE_RATE = 12
 /** Armor absorption denominator per tier: green 1/3, blue 1/2. */
 const ARMOR_ABSORB: Readonly<Record<ArmorType, number>> = { none: 0, green: 3, blue: 2 }
 
@@ -82,8 +94,21 @@ export function createPlayer(start: Vec2, angle: number): Player {
     allMapRevealed: false,
     hasBackpack: false,
     weaponState: 'ready',
-    weaponTimer: 0,
     weaponFrame: 0,
+    // Psprite cursor: every chain's ready head is index 2 (see game/weaponStates.ts).
+    // weapon.ts resyncs pspTics/frame on the first tick; player.ts must not import it.
+    pspIndex: 2,
+    pspTics: 1,
+    flashIndex: -1,
+    flashTics: 0,
+    refireCount: 0,
+    pspSy: 32,
+    ticAccumulator: 0,
+    extralight: 0,
+    attackLatch: false,
+    bulletSlope: 0,
+    bob: 0,
+    bobPhase: 0,
     damageFlash: 0,
     pickupFlash: 0,
     message: '',
@@ -116,6 +141,29 @@ export function updatePlayerMovement(
 
   const next = moveWithCollision(scene, player.pos, delta, PLAYER_RADIUS)
   player.pos = next
+
+  // View-bob source: drive `player.bob` (0..1) from how far we wanted to move this frame
+  // (the desired delta, not the collided result — a player shoving a wall still bobs). The
+  // renderer turns this into the figure-eight; standing still decays it to a hard 0.
+  const maxStep = MOVE_SPEED * dt
+  const speedFrac = maxStep > 0 ? clamp(length(delta) / maxStep, 0, 1) : 0
+  if (speedFrac > 0) {
+    player.bob += (speedFrac - player.bob) * BOB_RAMP
+    player.bobPhase += BOB_PHASE_RATE * dt
+  } else {
+    player.bob *= BOB_DECAY
+    if (player.bob < BOB_EPS) {
+      player.bob = 0
+    }
+  }
+}
+
+/**
+ * Collide-and-slide the player by an arbitrary delta (Phase D: chainsaw pull toward the
+ * struck target). Lets world.ts move the player without importing game/collision itself.
+ */
+export function nudgePlayer(scene: SceneQuery, player: Player, delta: Vec2): void {
+  player.pos = moveWithCollision(scene, player.pos, delta, PLAYER_RADIUS)
 }
 
 /**
@@ -227,15 +275,23 @@ export function giveKey(player: Player, key: KeyKind): void {
   player.pickupFlash = 1
 }
 
-/** Begin a weapon switch when the requested weapon is owned and not already selected. */
+/**
+ * Begin a weapon switch when the requested weapon is owned and not already selected.
+ * Sets pendingWeapon; if we're idle (ready) we begin LOWERING the current weapon — the
+ * tic engine (game/weapon.ts) reads pendingWeapon + weaponState to drive pspSy and the
+ * down/up chains, then commits currentWeapon when the slide bottoms out. While already
+ * firing/raising/lowering, only pendingWeapon is set (the commit is deferred). player.ts
+ * must NOT import game/weapon.ts, so we only flip the state flag here.
+ */
 export function requestWeapon(player: Player, kind: WeaponKind): void {
   const owned = player.weapons[kind] === true
   if (!owned || kind === player.currentWeapon) {
     return
   }
   player.pendingWeapon = kind
-  player.weaponState = 'switching'
-  player.weaponTimer = 0
+  if (player.weaponState === 'ready') {
+    player.weaponState = 'lowering'
+  }
 }
 
 /**

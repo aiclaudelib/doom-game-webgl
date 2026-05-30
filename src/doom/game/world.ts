@@ -32,12 +32,13 @@ import type {
   WeaponKind,
 } from '~/doom/types'
 import { approach } from '~/doom/core/math'
-import { dist } from '~/doom/core/vec'
+import { dist, scale } from '~/doom/core/vec'
 import { hitscan, lineOfSight, splashDamage } from '~/doom/game/combat'
 import { cellIndex, tileDef } from '~/doom/game/map'
 import {
   createPlayer,
   damagePlayer,
+  nudgePlayer,
   requestWeapon,
   setMessage,
   tickPlayerTimers,
@@ -57,7 +58,7 @@ import {
   updateEnemy,
 } from '~/doom/game/enemy'
 import { PROJECTILE_DEFS, projectileFrame, updateProjectile } from '~/doom/game/projectile'
-import { tryFire, updateWeapon, weaponBySlot, weaponDef } from '~/doom/game/weapon'
+import { nextOwnedWeapon, updateWeapon, weaponBySlot, weaponDef } from '~/doom/game/weapon'
 import { applyPickup, spawnPickup } from '~/doom/game/pickup'
 import { PROP_DEFS, propFrameLetter, spawnProp, updateProp } from '~/doom/game/prop'
 
@@ -81,11 +82,31 @@ const CEILING_PROP_Z_OFFSET = 1.2
 
 /** Player collision radius (cells) used as the splash target radius for the player. */
 const PLAYER_SPLASH_RADIUS = 0.22
+/** Chainsaw bite pull: how far (cells) a connecting bite drags the player toward the
+ *  target. Applied through moveWithCollision so a wall caps it — never a raw pos += . */
+const SAW_PULL = 0.18
 /** BFG spray: 40 tracer rays across a 90° fan, 2.25°/ray, range 16 cells (1024u). */
-const BFG_RAYS = 40
-const BFG_FAN = Math.PI / 2
-const BFG_RAY_STEP = BFG_FAN / BFG_RAYS
-const BFG_RAY_RANGE = 16
+const BFG_SPRAY_RAYS = 40
+const BFG_SPRAY_FAN = Math.PI / 2
+const BFG_SPRAY_STEP = BFG_SPRAY_FAN / BFG_SPRAY_RAYS
+const BFG_SPRAY_RANGE = 16
+/** Each connecting ray deals the sum of BFG_SPRAY_ROLLS dice of (1 + floor(rng*BFG_SPRAY_DICE)). */
+const BFG_SPRAY_ROLLS = 15
+const BFG_SPRAY_DICE = 8
+
+/**
+ * One BFG-spray ray's damage: the sum of BFG_SPRAY_ROLLS dice of (1 + floor(rng*BFG_SPRAY_DICE)),
+ * i.e. 15 rolls of d8 → ∈ [15, 120] with mean 67.5 (each die averages 4.5). Canon A_BFGSpray.
+ * Exported as a pure helper so the distribution is unit-tested directly; fireBfgSpray calls it
+ * (no behaviour change — the rng-call order is identical to the inlined loop it replaced).
+ */
+export function bfgRayDamage(rng: Rng): number {
+  let dmg = 0
+  for (let r = 0; r < BFG_SPRAY_ROLLS; r++) {
+    dmg += 1 + Math.floor(rng() * BFG_SPRAY_DICE)
+  }
+  return dmg
+}
 
 /** Pain Elemental: hard cap on simultaneously-live Lost Souls (doomBehaviorSpec.md §3.1). */
 const LOST_SOUL_CAP = 20
@@ -101,6 +122,12 @@ const VILE_RAISE_COOLDOWN = 1.5
 export interface WorldEvents {
   readonly fired: WeaponKind | null
   readonly dryFired: boolean
+  /**
+   * 'chainsaw' while the saw is equipped, ready, and the trigger is NOT held — i.e. the
+   * idle-buzz window. null otherwise. The engine throttles the actual idle sound behind
+   * its own latch; the deterministic sim stays audio-state-free (just reports the flag).
+   */
+  readonly weaponIdle: 'chainsaw' | null
   readonly doorOpened: boolean
   readonly enemyHurt: boolean
   readonly enemyDied: boolean
@@ -292,6 +319,7 @@ export class World implements SceneQuery {
     const weaponPhase = this.updateWeaponPhase(input, dt)
     const fired = weaponPhase.fired
     const dryFired = weaponPhase.dryFired
+    const weaponIdle = weaponPhase.weaponIdle
 
     // 4. Enemies — count freshly finished deaths into kills (barrels are decor: they
     //    never count, but a barrel that just started dying detonates a radius blast).
@@ -370,6 +398,7 @@ export class World implements SceneQuery {
     return {
       fired,
       dryFired,
+      weaponIdle,
       doorOpened,
       enemyHurt,
       enemyDied,
@@ -407,7 +436,8 @@ export class World implements SceneQuery {
     }
 
     if (pdef.splashCells !== undefined) {
-      this.applySplash(impact.pos, this.rng)
+      // splashCells is the on/off gate; splashPeak (default 128) sizes the blast.
+      this.applySplash(impact.pos, this.rng, pdef.splashPeak ?? 128)
     }
     if (pdef.bfgSpray === true) {
       this.fireBfgSpray(proj)
@@ -464,9 +494,11 @@ export class World implements SceneQuery {
   /**
    * Chebyshev radius blast (rocket / barrel): every live, non-immune enemy within
    * the falloff and in line-of-sight takes splash; the player takes it too (splash
-   * hurts the shooter). Damage is the pure combat.splashDamage falloff.
+   * hurts the shooter). Damage is the pure combat.splashDamage falloff. `peak` is the
+   * epicentre damage + reach in map units — the rocket threads its own splashPeak; the
+   * barrel uses the default 128. A smaller peak shrinks the blast radius.
    */
-  private applySplash(center: Vec2, rng: Rng): void {
+  private applySplash(center: Vec2, rng: Rng, peak = 128): void {
     for (const enemy of this.enemies) {
       if (!enemy.alive || enemy.state === 'dead' || enemy.state === 'dying') {
         continue
@@ -475,13 +507,13 @@ export class World implements SceneQuery {
       if (def.splashImmune === true) {
         continue
       }
-      const d = splashDamage(center, enemy.pos, def.radius)
+      const d = splashDamage(center, enemy.pos, def.radius, peak)
       if (d > 0 && lineOfSight(this, center, enemy.pos)) {
         damageEnemy(enemy, d, rng)
       }
     }
     const player = this._player
-    const pd = splashDamage(center, player.pos, PLAYER_SPLASH_RADIUS)
+    const pd = splashDamage(center, player.pos, PLAYER_SPLASH_RADIUS, peak)
     if (pd > 0 && lineOfSight(this, center, player.pos)) {
       damagePlayer(player, pd)
     }
@@ -596,18 +628,20 @@ export class World implements SceneQuery {
   }
 
   /**
-   * BFG spray: on the ball's impact, fire BFG_RAYS hitscans across a 90° fan around
-   * the FROZEN firing angle (BFG_RAY_STEP per ray), from the FROZEN firing origin —
-   * turning after firing must not change the spray. Each ray that hits an enemy
-   * deals the sum of 15 dice rolls (1+floor(rng*8)) — 15..120 (realized ~49..87).
+   * BFG spray: on the ball's impact, fire BFG_SPRAY_RAYS hitscans across a 90° fan around
+   * the FROZEN firing angle (BFG_SPRAY_STEP per ray). Canon A_BFGSpray originates the rays at
+   * `mo->target` — the SHOOTING PLAYER's CURRENT position — not the ball/impact point, so the
+   * spray fires from where the player stands NOW (E5). The angle stays FROZEN at fire time
+   * (turning after firing must NOT swing the cone). Each ray that hits an enemy deals the sum
+   * of BFG_SPRAY_ROLLS dice of (1 + floor(rng*BFG_SPRAY_DICE)) — 15..120 (realized ~49..87).
    */
   private fireBfgSpray(proj: Projectile): void {
-    const origin = proj.originPos ?? proj.pos
+    const origin = this._player.pos
     const baseAngle = proj.originAngle ?? Math.atan2(proj.vel.y, proj.vel.x)
-    const start = baseAngle - BFG_FAN / 2
-    for (let i = 0; i < BFG_RAYS; i++) {
-      const angle = start + i * BFG_RAY_STEP
-      const result = hitscan(this, this.enemies, origin, angle, BFG_RAY_RANGE)
+    const start = baseAngle - BFG_SPRAY_FAN / 2
+    for (let i = 0; i < BFG_SPRAY_RAYS; i++) {
+      const angle = start + i * BFG_SPRAY_STEP
+      const result = hitscan(this, this.enemies, origin, angle, BFG_SPRAY_RANGE)
       if (!result.hitEnemy) {
         continue
       }
@@ -615,19 +649,16 @@ export class World implements SceneQuery {
       if (enemy === undefined) {
         continue
       }
-      let dmg = 0
-      for (let r = 0; r < 15; r++) {
-        dmg += 1 + Math.floor(this.rng() * 8)
-      }
-      damageEnemy(enemy, dmg, this.rng)
+      damageEnemy(enemy, bfgRayDamage(this.rng), this.rng)
     }
   }
 
   /**
-   * Map the weapon slot, run the switch/fire phase, then fire when intent + ready.
-   * Automatic weapons (chaingun) repeat while the key is held; the rest need a
-   * fresh press per shot. `dryFired` reports the empty-click case (trigger pulled
-   * with no ammo) so the engine can play a distinct sound from a real shot.
+   * Map the weapon slot / cycle, then drive the 35Hz psprite tic engine, which both
+   * advances the raise/lower/fire animation and resolves the shot internally. Automatic
+   * weapons (chaingun/plasma) repeat while the key is held; the rest need a fresh press
+   * per shot. `dryFired` reports the empty-click case (trigger pulled with no ammo) so
+   * the engine can play a distinct sound from a real shot.
    */
   private updateWeaponPhase(
     input: InputFrame,
@@ -635,6 +666,7 @@ export class World implements SceneQuery {
   ): {
     fired: WeaponKind | null
     dryFired: boolean
+    weaponIdle: 'chainsaw' | null
   } {
     const player = this._player
 
@@ -644,20 +676,24 @@ export class World implements SceneQuery {
         requestWeapon(player, kind)
       }
     }
-
-    updateWeapon(player, dt)
+    if (input.weaponCycle !== 0) {
+      requestWeapon(player, nextOwnedWeapon(player, input.weaponCycle))
+    }
 
     const def = weaponDef(player.currentWeapon)
-    const wantsToFire = def.automatic ? input.firing : input.fire
-    if (wantsToFire && player.weaponState === 'ready') {
-      const outcome = tryFire(player, this, this.enemies, this.projectiles, this.rng)
-      if (outcome.fired) {
-        return { fired: outcome.soundKind, dryFired: false }
-      }
-      // Ready + intent but no shot ⇒ empty trigger pull (out of ammo).
-      return { fired: null, dryFired: true }
+    const attack = def.automatic ? input.firing : input.fire
+    const r = updateWeapon(player, attack, this, this.enemies, this.projectiles, this.rng, dt)
+    // Phase D: a connecting chainsaw bite drags the player toward the target. Route it
+    // through moveWithCollision (nudgePlayer) so a wall caps the pull — NEVER a raw
+    // player.pos += , which would slide the player straight through geometry.
+    if (r.pull !== undefined) {
+      nudgePlayer(this, player, scale(r.pull, SAW_PULL))
     }
-    return { fired: null, dryFired: false }
+    const weaponIdle =
+      player.currentWeapon === 'chainsaw' && player.weaponState === 'ready' && !attack
+        ? 'chainsaw'
+        : null
+    return { fired: r.fired, dryFired: r.dryFired, weaponIdle }
   }
 
   /**

@@ -72,6 +72,15 @@ const BINDING_LABEL: Readonly<Record<BindingAction, string>> = {
   run: 'RUN',
   use: 'USE',
   fire: 'FIRE',
+  weapon1: 'WEAPON 1',
+  weapon2: 'WEAPON 2',
+  weapon3: 'WEAPON 3',
+  weapon4: 'WEAPON 4',
+  weapon5: 'WEAPON 5',
+  weapon6: 'WEAPON 6',
+  weapon7: 'WEAPON 7',
+  weaponNext: 'NEXT WEAPON',
+  weaponPrev: 'PREV WEAPON',
 }
 
 function clamp01(v: number): number {

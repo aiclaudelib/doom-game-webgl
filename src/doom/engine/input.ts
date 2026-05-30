@@ -27,6 +27,7 @@ export class InputManager {
   private pointerX = 0
   private pointerY = 0
   private weaponSlot = 0
+  private weaponCycle: -1 | 0 | 1 = 0
 
   constructor(bindings: KeyBindings) {
     this.bindings = bindings
@@ -41,12 +42,18 @@ export class InputManager {
     if (!this.held.has(code)) {
       this.pressedThisFrame.add(code)
       this.captureWeaponSlot(code)
+      this.captureWeaponCycle(code)
     }
     this.held.add(code)
   }
 
   private readonly onKeyUp = (e: KeyboardEvent): void => {
     this.held.delete(e.code)
+  }
+
+  private readonly onWheel = (e: WheelEvent): void => {
+    // Scroll up (deltaY < 0) → previous weapon; scroll down → next. Last write wins.
+    this.weaponCycle = e.deltaY < 0 ? -1 : 1
   }
 
   private readonly onMouseMove = (e: MouseEvent): void => {
@@ -87,6 +94,7 @@ export class InputManager {
     canvas.addEventListener('mousemove', this.onMouseMove)
     canvas.addEventListener('mousedown', this.onMouseDown)
     canvas.addEventListener('contextmenu', this.onContextMenu)
+    canvas.addEventListener('wheel', this.onWheel, { passive: true })
   }
 
   detach(): void {
@@ -100,6 +108,7 @@ export class InputManager {
       canvas.removeEventListener('mousemove', this.onMouseMove)
       canvas.removeEventListener('mousedown', this.onMouseDown)
       canvas.removeEventListener('contextmenu', this.onContextMenu)
+      canvas.removeEventListener('wheel', this.onWheel)
     }
     this.canvas = null
     this.held.clear()
@@ -107,6 +116,7 @@ export class InputManager {
     this.mouseDX = 0
     this.pointerDown = false
     this.weaponSlot = 0
+    this.weaponCycle = 0
   }
 
   setBindings(bindings: KeyBindings): void {
@@ -148,6 +158,7 @@ export class InputManager {
       use,
       nav,
       weaponSlot: this.weaponSlot,
+      weaponCycle: this.weaponCycle,
       pointerX: this.pointerX,
       pointerY: this.pointerY,
       pointerDown: this.pointerDown,
@@ -157,6 +168,7 @@ export class InputManager {
     this.pressedThisFrame.clear()
     this.mouseDX = 0
     this.weaponSlot = 0
+    this.weaponCycle = 0
     this.pointerDown = false
 
     return frame
@@ -185,30 +197,27 @@ export class InputManager {
   }
 
   private captureWeaponSlot(code: string): void {
-    switch (code) {
-      case 'Digit1':
-        this.weaponSlot = 1
-        break
-      case 'Digit2':
-        this.weaponSlot = 2
-        break
-      case 'Digit3':
-        this.weaponSlot = 3
-        break
-      case 'Digit4':
-        this.weaponSlot = 4
-        break
-      case 'Digit5':
-        this.weaponSlot = 5
-        break
-      case 'Digit6':
-        this.weaponSlot = 6
-        break
-      case 'Digit7':
-        this.weaponSlot = 7
-        break
-      default:
-        break
+    const b = this.bindings
+    const slots: readonly string[] = [
+      b.weapon1,
+      b.weapon2,
+      b.weapon3,
+      b.weapon4,
+      b.weapon5,
+      b.weapon6,
+      b.weapon7,
+    ]
+    const idx = slots.indexOf(code)
+    if (idx >= 0) {
+      this.weaponSlot = idx + 1
+    }
+  }
+
+  private captureWeaponCycle(code: string): void {
+    if (code === this.bindings.weaponNext) {
+      this.weaponCycle = 1
+    } else if (code === this.bindings.weaponPrev) {
+      this.weaponCycle = -1
     }
   }
 
@@ -241,7 +250,16 @@ export class InputManager {
       code === b.strafeRight ||
       code === b.run ||
       code === b.use ||
-      code === b.fire
+      code === b.fire ||
+      code === b.weapon1 ||
+      code === b.weapon2 ||
+      code === b.weapon3 ||
+      code === b.weapon4 ||
+      code === b.weapon5 ||
+      code === b.weapon6 ||
+      code === b.weapon7 ||
+      code === b.weaponNext ||
+      code === b.weaponPrev
     ) {
       return true
     }
@@ -252,13 +270,6 @@ export class InputManager {
       case 'ArrowRight':
       case 'Space':
       case 'Enter':
-      case 'Digit1':
-      case 'Digit2':
-      case 'Digit3':
-      case 'Digit4':
-      case 'Digit5':
-      case 'Digit6':
-      case 'Digit7':
         return true
       default:
         return false

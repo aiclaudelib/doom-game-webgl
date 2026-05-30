@@ -4,7 +4,7 @@ import { mulberry32 } from '~/doom/core/rng'
 import { createAssets } from '~/doom/engine/textures'
 import { compileLevel } from '~/doom/game/map'
 import { defaultSettings } from '~/doom/game/state'
-import { World } from '~/doom/game/world'
+import { World, bfgRayDamage } from '~/doom/game/world'
 
 const NO_NAV: NavEdge = {
   up: false,
@@ -26,6 +26,7 @@ const IDLE: InputFrame = {
   use: false,
   nav: NO_NAV,
   weaponSlot: 0,
+  weaponCycle: 0,
   pointerX: 0,
   pointerY: 0,
   pointerDown: false,
@@ -531,5 +532,141 @@ describe('World', () => {
       }
     }
     expect(sawShot).toBe(true)
+  })
+
+  it('a smaller rocket splash peak does not chip an enemy a full-peak blast would', () => {
+    // Player faces east; a grunt 'g' sits ~2 cells ahead. A rocket detonating ~2 cells short
+    // of the grunt with the canonical peak 128 still grazes it (128 − ~128u ≈ 0, edge), but a
+    // shrunken peak leaves it untouched. We assert the falloff is peak-driven via splashDamage
+    // directly above (projectileWeapons.test.ts); here we lock that the rocket still kills a
+    // lined-up grunt with its real 128 peak (regression: the peak thread didn't weaken splash).
+    const source: LevelSource = {
+      name: 'Rocket Peak',
+      rows: ['##########', '#@...g...X#', '##########'],
+      floorFlat: 0,
+      ceilingFlat: 2,
+      playerAngle: 0,
+    }
+    const world = new World(compileLevel(source), createAssets(1), mulberry32(1), defaultSettings())
+    world.player.weapons.rocket = true
+    world.player.currentWeapon = 'rocket'
+    world.player.ammo.rockets = 5
+    let died = false
+    for (let i = 0; i < 240 && !died; i++) {
+      const events = world.update(input({ fire: true, firing: true }), 1 / 60)
+      if (events.enemyDied) {
+        died = true
+      }
+    }
+    expect(died).toBe(true)
+    expect(world.stats.kills).toBe(1)
+  })
+
+  it('BFG spray fires from the player CURRENT (moved) position, not the fire-time muzzle (E5)', () => {
+    // Player '@' faces east in a long (40-wide) corridor. A grunt 'g' sits in the row just
+    // south of the firing line at col 24 → centre (24.5, 2.5). The BFG ball flies east down
+    // row 1 (missing the off-axis grunt) all the way to the far wall; meanwhile the player
+    // walks east the whole time. Geometry (verified): the ball spawns when the player is at
+    // x≈4.4 — from THAT muzzle the grunt is ~19.7 cells away, OUTSIDE the 16-cell spray reach
+    // (a spray from the stale fire-time muzzle would MISS). By the time the ball detonates at
+    // the wall the player has advanced to x≈12.4 — from THERE the grunt is ~12.2 cells away,
+    // INSIDE reach. So the grunt only dies because A_BFGSpray originates at the player's
+    // CURRENT (moved) position (E5), not the frozen muzzle. This is the real-bug regression.
+    const rows = [
+      '#'.repeat(40),
+      `#@${'.'.repeat(37)}#`, // row 1 — player corridor (cols 1..38)
+      `#${'.'.repeat(23)}g${'.'.repeat(14)}#`, // row 2 — grunt at col 24
+      '#'.repeat(40),
+    ]
+    const source: LevelSource = {
+      name: 'BFG Moved Origin',
+      rows,
+      floorFlat: 0,
+      ceilingFlat: 2,
+      playerAngle: 0,
+    }
+    const world = new World(compileLevel(source), createAssets(1), mulberry32(1), defaultSettings())
+    world.player.weapons.bfg = true
+    world.player.currentWeapon = 'bfg'
+    world.player.ammo.cells = 40 // exactly one BFG shot
+
+    let gruntDown = false
+    for (let i = 0; i < 400 && !gruntDown; i++) {
+      // Hold fire + walk east. The single ball fires, flies the full corridor, and detonates
+      // at the far wall while the player advances well past the fire-time muzzle position.
+      world.update(input({ fire: true, firing: true, moveForward: 1 }), 1 / 60)
+      gruntDown = world.enemyStates.some(
+        e => e.kind !== 'barrel' && (e.state === 'dying' || e.state === 'dead'),
+      )
+    }
+    // The grunt died — only reachable because the spray came from the player's moved position.
+    expect(gruntDown).toBe(true)
+  })
+
+  it('turning after firing the BFG does NOT swing the spray cone (frozen fire-time angle)', () => {
+    // Player '@' faces east; a grunt 'g' sits ahead-ish (within the east ±45° cone), off the
+    // exact axis so the ball flies past it to the far wall. We fire facing east WITHOUT turning
+    // (so the ball spawns along east, captured at fire time), and only AFTER the ball is in
+    // flight (cells spent → 0) do we spin the player hard. Because A_BFGSpray uses the FROZEN
+    // fire-time facing, the cone still points east and rakes the grunt — turning is irrelevant.
+    // grunt at col 6 → centre (6.5, 2.5): ~5 cells east, ~11° south — inside the east cone.
+    const rows = [
+      '####################',
+      `#@${'.'.repeat(17)}#`, // row 1 — player corridor (cols 1..18)
+      `#${'.'.repeat(5)}g${'.'.repeat(12)}#`, // row 2 — grunt at col 6
+      '####################',
+    ]
+    const source: LevelSource = {
+      name: 'BFG Frozen Angle',
+      rows,
+      floorFlat: 0,
+      ceilingFlat: 2,
+      playerAngle: 0,
+    }
+    const world = new World(compileLevel(source), createAssets(1), mulberry32(1), defaultSettings())
+    world.player.weapons.bfg = true
+    world.player.currentWeapon = 'bfg'
+    world.player.ammo.cells = 40 // exactly one BFG shot
+
+    let gruntDown = false
+    let spunAway = false
+    for (let i = 0; i < 240 && !gruntDown; i++) {
+      // Hold fire; once the cells are spent the ball is airborne — only THEN spin hard.
+      const airborne = world.player.ammo.cells === 0
+      if (airborne) {
+        spunAway = true
+      }
+      world.update(input({ fire: true, firing: true, turnAxis: airborne ? 1 : 0 }), 1 / 60)
+      gruntDown = world.enemyStates.some(
+        e => e.kind !== 'barrel' && (e.state === 'dying' || e.state === 'dead'),
+      )
+    }
+    // The grunt died from the FROZEN east cone even though the player spun far off east.
+    expect(spunAway).toBe(true)
+    expect(world.player.angle).not.toBeCloseTo(0, 2) // player ended up facing well off east
+    expect(gruntDown).toBe(true)
+  })
+
+  it('bfgRayDamage rolls 15 d8 → strictly within [15,120] with mean ≈ 67.5', () => {
+    // A_BFGSpray deals, per connecting ray, the sum of 15 dice of (1 + floor(rng*8)). Each die
+    // is in [1,8] so the sum is in [15,120]; each die averages 4.5 → the sum averages 67.5.
+    const rng = mulberry32(0xb46)
+    const SAMPLES = 200_000
+    let min = Number.POSITIVE_INFINITY
+    let max = Number.NEGATIVE_INFINITY
+    let sum = 0
+    for (let i = 0; i < SAMPLES; i++) {
+      const d = bfgRayDamage(rng)
+      expect(d).toBeGreaterThanOrEqual(15)
+      expect(d).toBeLessThanOrEqual(120)
+      min = Math.min(min, d)
+      max = Math.max(max, d)
+      sum += d
+    }
+    // The mean over a large sample is ~67.5 (15 × 4.5).
+    expect(sum / SAMPLES).toBeCloseTo(67.5, 0)
+    // The full range is reachable: extremes land well below/above the mean across the sample.
+    expect(min).toBeLessThan(45)
+    expect(max).toBeGreaterThan(90)
   })
 })

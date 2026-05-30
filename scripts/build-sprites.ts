@@ -20,6 +20,7 @@ import { readPlaypal } from './wad/palette'
 import { findLump, readWad, spriteLumps } from './wad/readWad'
 import { buildSpriteIndex } from './wad/spriteIndex'
 import type { DecodedPatch } from './wad/types'
+import { REQUIRED_VIEWMODEL_FRAMES } from '../src/doom/game/viewmodelFrames'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(HERE, '..')
@@ -257,6 +258,27 @@ async function main(): Promise<void> {
       })
     }
     actors[prefix] = { rotated: actor.rotated, frames: outFrames }
+  }
+
+  // Coverage gate: every DRAWN first-person weapon frame (weaponPlan §1.2) must be packed.
+  // A dropped letter would silently leave the runtime resolving a viewmodel frame to null —
+  // fail the build loudly instead. Resolved frame index must point at a real, sized rect.
+  const missing: string[] = []
+  for (const [prefix, letters] of Object.entries(REQUIRED_VIEWMODEL_FRAMES)) {
+    const actor = actors[prefix]
+    for (const letter of letters) {
+      const slot = actor?.frames[letter]?.[0]
+      const frame = slot !== undefined ? frames[slot.f] : undefined
+      if (frame === undefined || frame.w <= 0 || frame.h <= 0) {
+        missing.push(`${prefix}/${letter}`)
+      }
+    }
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `viewmodel coverage gate: ${missing.length} required frame(s) missing from the atlas: ` +
+        missing.join(', '),
+    )
   }
 
   const manifest: Manifest = {

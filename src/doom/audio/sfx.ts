@@ -11,6 +11,8 @@ export type SfxName =
   | 'chaingun'
   | 'fist'
   | 'chainsaw'
+  | 'sawIdle'
+  | 'sawHit'
   | 'rocket'
   | 'plasma'
   | 'bfg'
@@ -204,6 +206,18 @@ function synth(ctx: AudioContext, bus: GainNode, name: SfxName, now: number): vo
       // Gnarly buzzing saw: a detuned mid-band growl plus a band of grit noise.
       detunedPair(ctx, bus, 240, 220, 30, now, 0.12, GUN_ADSR)
       noiseVoice(ctx, bus, now, 0.1, 1800, { ...GUN_ADSR, peak: 0.5 })
+      break
+    }
+    case 'sawIdle': {
+      // Quiet low idle buzz: a soft detuned growl under a faint low-passed hum.
+      detunedPair(ctx, bus, 150, 145, 14, now, 0.1, { ...GUN_ADSR, peak: 0.22 })
+      noiseVoice(ctx, bus, now, 0.08, 900, { ...GUN_ADSR, peak: 0.14 })
+      break
+    }
+    case 'sawHit': {
+      // Gritty bite: a hard detuned rip plus a bright burst of grit when teeth catch.
+      detunedPair(ctx, bus, 300, 260, 40, now, 0.1, { ...GUN_ADSR, peak: 0.7 })
+      noiseVoice(ctx, bus, now, 0.09, 2600, { ...GUN_ADSR, peak: 0.6 })
       break
     }
     case 'rocket': {

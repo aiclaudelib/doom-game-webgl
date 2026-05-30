@@ -27,6 +27,7 @@ const IDLE: InputFrame = {
   use: false,
   nav: NO_NAV,
   weaponSlot: 0,
+  weaponCycle: 0,
   pointerX: 0,
   pointerY: 0,
   pointerDown: false,
