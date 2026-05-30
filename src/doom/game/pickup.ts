@@ -53,6 +53,7 @@ interface AmmoPickupConfig {
 
 type AmmoPickupKind =
   | 'bullets'
+  | 'clipDropped'
   | 'bulletBox'
   | 'shells'
   | 'shellBox'
@@ -64,6 +65,8 @@ type AmmoPickupKind =
 /** Ammo pickups: §3.4 sums. Clip +10, box +50; shells +4, box +20; rockets +1/+5; cells +20/+100. */
 const AMMO_PICKUPS: Readonly<Record<AmmoPickupKind, AmmoPickupConfig>> = {
   bullets: { ammo: 'bullets', amount: 10, message: 'PICKED UP A CLIP' },
+  // Dropped clip = half a clip (5 bullets) — the canonical dropped-ammo halving (§3.4).
+  clipDropped: { ammo: 'bullets', amount: 5, message: 'PICKED UP A CLIP' },
   bulletBox: { ammo: 'bullets', amount: 50, message: 'PICKED UP A BOX OF BULLETS' },
   shells: { ammo: 'shells', amount: 4, message: 'PICKED UP SHOTGUN SHELLS' },
   shellBox: { ammo: 'shells', amount: 20, message: 'PICKED UP A BOX OF SHELLS' },
@@ -273,6 +276,8 @@ export function applyPickup(player: Player, kind: PickupKind): PickupResult {
     // Ammo.
     case 'bullets':
       return applyAmmoPickup(player, AMMO_PICKUPS.bullets)
+    case 'clipDropped':
+      return applyAmmoPickup(player, AMMO_PICKUPS.clipDropped)
     case 'bulletBox':
       return applyAmmoPickup(player, AMMO_PICKUPS.bulletBox)
     case 'shells':

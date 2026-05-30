@@ -11,6 +11,8 @@ export const PICKUP_SPRITE: Readonly<Record<PickupKind, string>> = {
   medkit: 'MEDI',
   armor: 'ARM1',
   bullets: 'CLIP',
+  // Dropped half-clip reuses the CLIP atlas sprite (it is a clip, just worth 5 bullets).
+  clipDropped: 'CLIP',
   shells: 'SHEL',
   shotgun: 'SHOT',
   chaingun: 'MGUN',

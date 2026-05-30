@@ -387,6 +387,124 @@ describe('World', () => {
     expect(world.player.health).toBeLessThan(playerHpBefore)
   })
 
+  it('a slain grunt drops a half clip the player can grab for +5 bullets', () => {
+    // Player '@' faces east; a lone grunt 'g' down the corridor. The player drains its
+    // own ammo low, kills the grunt, then walks over the corpse to grab the dropped clip.
+    const source: LevelSource = {
+      name: 'Grunt Drop',
+      rows: ['############', '#@.......g.X#', '############'],
+      floorFlat: 0,
+      ceilingFlat: 2,
+      playerAngle: 0,
+    }
+    const world = new World(compileLevel(source), createAssets(1), mulberry32(1), defaultSettings())
+
+    // Kill the grunt with the pistol; on death it drops a 'clipDropped' pickup at its corpse.
+    let died = false
+    for (let i = 0; i < 600 && !died; i++) {
+      const events = world.update(input({ fire: true, firing: true }), 1 / 60)
+      if (events.enemyDied) {
+        died = true
+      }
+    }
+    expect(died).toBe(true)
+
+    // Set bullets low (well under cap) so the +5 from the dropped clip is observable, then
+    // walk east over the corpse/drop and confirm the grab tops bullets up by the dropped 5.
+    world.player.ammo.bullets = 0
+    let grabbed = false
+    for (let i = 0; i < 600 && !grabbed; i++) {
+      const events = world.update(input({ moveForward: 1 }), 1 / 60)
+      if (events.pickedUp) {
+        grabbed = true
+      }
+    }
+    expect(grabbed).toBe(true)
+    // The dropped clip grants the halved 5 bullets (not a full clip's 10).
+    expect(world.player.ammo.bullets).toBe(5)
+  })
+
+  it('a slain shotgun guy drops a shotgun weapon', () => {
+    // Player '@' faces a shotgun guy 'S'. The player has no shotgun; killing the guy drops
+    // the shotgun weapon, which the player then walks over to claim.
+    const source: LevelSource = {
+      name: 'Shotgun Drop',
+      rows: ['############', '#@.......S.X#', '############'],
+      floorFlat: 0,
+      ceilingFlat: 2,
+      playerAngle: 0,
+    }
+    const world = new World(compileLevel(source), createAssets(1), mulberry32(1), defaultSettings())
+    expect(world.player.weapons.shotgun).toBe(false)
+
+    let died = false
+    for (let i = 0; i < 600 && !died; i++) {
+      const events = world.update(input({ fire: true, firing: true }), 1 / 60)
+      if (events.enemyDied) {
+        died = true
+      }
+    }
+    expect(died).toBe(true)
+
+    // Walk east over the dropped shotgun to claim it.
+    let grabbed = false
+    for (let i = 0; i < 600 && !grabbed; i++) {
+      const events = world.update(input({ moveForward: 1 }), 1 / 60)
+      if (events.pickedUp) {
+        grabbed = true
+      }
+    }
+    expect(grabbed).toBe(true)
+    expect(world.player.weapons.shotgun).toBe(true)
+  })
+
+  it('infight: an enemy missile hitting a different enemy makes the victim retarget the attacker', () => {
+    // Player '@' at the west end; a demon 'd' stands between the player and an imp 'i' down
+    // the line. The imp fires fireballs at the player; the first to pass the demon's cell hits
+    // the demon → the demon retargets the imp (its targetKind becomes 'imp').
+    const source: LevelSource = {
+      name: 'Infight',
+      rows: ['###############', '#@..d......i..#', '###############'],
+      floorFlat: 0,
+      ceilingFlat: 2,
+      playerAngle: 0,
+    }
+    const world = new World(compileLevel(source), createAssets(1), mulberry32(1), defaultSettings())
+
+    let demonTargetsImp = false
+    for (let i = 0; i < 600 && !demonTargetsImp; i++) {
+      world.update(input({}), 1 / 60) // never fire — only the imp's fireballs act
+      demonTargetsImp = world.enemyStates.some(e => e.kind === 'demon' && e.targetKind === 'imp')
+    }
+    expect(demonTargetsImp).toBe(true)
+  })
+
+  it('infight: a hell knight missile hitting a baron does NOT retarget (Knight/Baron exempt)', () => {
+    // A baron 'n' stands between the player and a hell knight 'K'. The knight fires
+    // baronballs at the player; one passes the baron's cell — but the Knight/Baron species
+    // pair is exempt, so the baron NEVER retargets the knight (its target stays the player).
+    const source: LevelSource = {
+      name: 'Bruiser Exempt',
+      rows: ['###############', '#@..n......K..#', '###############'],
+      floorFlat: 0,
+      ceilingFlat: 2,
+      playerAngle: 0,
+    }
+    const world = new World(compileLevel(source), createAssets(1), mulberry32(1), defaultSettings())
+
+    // Run long enough for many knight missiles to cross the baron's cell.
+    let baronRetargeted = false
+    for (let i = 0; i < 600; i++) {
+      world.update(input({}), 1 / 60)
+      if (world.enemyStates.some(e => e.kind === 'baron' && e.targetKind === 'hellKnight')) {
+        baronRetargeted = true
+        break
+      }
+    }
+    // The exempt pair passes through: the baron never targets the hell knight.
+    expect(baronRetargeted).toBe(false)
+  })
+
   it('reports dryFired on an empty trigger pull and not on a real shot', () => {
     const world = makeWorld()
     // Drain the pistol's ammo so the next fresh press clicks empty.

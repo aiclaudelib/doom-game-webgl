@@ -252,9 +252,21 @@ export class World implements SceneQuery {
     return { kills: this.kills, totalEnemies: this.totalEnemies, level: this.name }
   }
 
-  /** Read-only snapshot of every entity's kind + live state (for tests / debug HUD). */
-  get enemyStates(): readonly { kind: Enemy['kind']; state: Enemy['state'] }[] {
-    return this.enemies.map(e => ({ kind: e.kind, state: e.state }))
+  /**
+   * Read-only snapshot of every entity's kind + live state, plus its infight target's kind
+   * (null = hunting the player) — for tests / a debug HUD. The target kind lets a test see a
+   * retarget (doomBehaviorSpec.md §4 / §5 #20) without exposing the mutable enemies array.
+   */
+  get enemyStates(): readonly {
+    kind: Enemy['kind']
+    state: Enemy['state']
+    targetKind: Enemy['kind'] | null
+  }[] {
+    return this.enemies.map(e => ({
+      kind: e.kind,
+      state: e.state,
+      targetKind: e.target?.kind ?? null,
+    }))
   }
 
   /** Read-only snapshot of every prop's kind + anim clock (for tests / debug HUD). */
@@ -293,7 +305,7 @@ export class World implements SceneQuery {
       const aliveBefore = enemy.alive
       const stateBefore = enemy.state
       enemy.justRaised = false
-      updateEnemy(enemy, player, this, this.projectiles, this.rng, dt)
+      updateEnemy(enemy, player, this, this.projectiles, this.enemies, this.rng, dt)
       if (enemy.state === 'hurt' && stateBefore !== 'hurt') {
         enemyHurt = true
       }
@@ -314,9 +326,14 @@ export class World implements SceneQuery {
       if (enemy.kind === 'archvile') {
         this.serviceArchvile(enemy, dt)
       }
-      if (aliveBefore && !enemy.alive && !isUncounted(enemy.kind)) {
-        this.kills++
-        enemyDied = true
+      if (aliveBefore && !enemy.alive) {
+        // Death-transition frame (fires exactly once): drop the kind's pickup, if any
+        // (Zombieman → half clip, Shotgun guy → shotgun, Chaingunner → chaingun; §3.1).
+        this.spawnEnemyDrop(enemy)
+        if (!isUncounted(enemy.kind)) {
+          this.kills++
+          enemyDied = true
+        }
       }
     }
 
@@ -375,7 +392,15 @@ export class World implements SceneQuery {
     if (impact.hit === 'enemy') {
       const enemy = this.enemies[impact.enemyIndex]
       if (enemy !== undefined) {
-        damageEnemy(enemy, proj.damage, this.rng)
+        // An ENEMY missile striking a DIFFERENT enemy is infighting: provoke the victim
+        // (retarget the owner) + damage it, UNLESS they are the exempt Knight/Baron pair
+        // (which passes through unharmed). Player shots always just deal damage. (§4 / §5 #20)
+        const owner = proj.owner ?? null
+        if (proj.fromEnemy && owner !== null && owner !== enemy) {
+          this.provokeInfight(enemy, owner, proj.damage)
+        } else {
+          damageEnemy(enemy, proj.damage, this.rng)
+        }
       }
     } else if (impact.hit === 'player') {
       damagePlayer(this._player, proj.damage)
@@ -387,6 +412,38 @@ export class World implements SceneQuery {
     if (pdef.bfgSpray === true) {
       this.fireBfgSpray(proj)
     }
+  }
+
+  /**
+   * Infighting (doomBehaviorSpec.md §4 / §5 #20): an enemy missile hit `victim`, fired by
+   * `attacker`. UNLESS they belong to the same exempt species (the Knight/Baron pair, which
+   * never infight), the victim retargets the attacker and takes the missile damage (which
+   * also wakes it via damageEnemy). The exempt pair passes through: no damage, no retarget.
+   */
+  private provokeInfight(victim: Enemy, attacker: Enemy, damage: number): void {
+    if (sameInfightSpecies(victim.kind, attacker.kind)) {
+      return
+    }
+    // Only retarget a still-fighting attacker — never lock onto one that already died on
+    // the same tick (resolveTarget would clear it next frame, but skip the dead pointer now).
+    if (attacker.alive && attacker.state !== 'dead' && attacker.state !== 'dying') {
+      victim.target = attacker
+    }
+    damageEnemy(victim, damage, this.rng)
+  }
+
+  /**
+   * Drop the slain enemy's pickup at its corpse (doomBehaviorSpec.md §3.1 / §5 #18). Only
+   * kinds with a `drop` in ENEMY_DEFS leave anything (Zombieman → half clip, Shotgun guy →
+   * shotgun, Chaingunner → chaingun); barrels / bosses / the rest drop nothing. Called once
+   * on the death-transition frame, so there is no double-spawn.
+   */
+  private spawnEnemyDrop(enemy: Enemy): void {
+    const drop = enemyDef(enemy.kind).drop
+    if (drop === undefined) {
+      return
+    }
+    this.pickups.push(spawnPickup(drop, enemy.pos.x, enemy.pos.y))
   }
 
   /**
@@ -1097,4 +1154,15 @@ function pickupTexture(assets: Assets, pickup: Pickup): Texture {
  */
 function isUncounted(kind: Enemy['kind']): boolean {
   return kind === 'barrel' || kind === 'lostSoul'
+}
+
+/**
+ * Infighting same-species exemption (doomBehaviorSpec.md §4 / §3.1): a Hell Knight and a
+ * Baron are grouped as one species and NEVER infight each other (PIT_CheckThing groups
+ * MT_KNIGHT+MT_BRUISER). All other kind pairs — including two identical kinds — DO infight.
+ * Kept deliberately narrow: only this one pair is exempt.
+ */
+function sameInfightSpecies(a: Enemy['kind'], b: Enemy['kind']): boolean {
+  const bruiser = (k: Enemy['kind']): boolean => k === 'hellKnight' || k === 'baron'
+  return bruiser(a) && bruiser(b)
 }

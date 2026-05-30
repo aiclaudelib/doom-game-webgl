@@ -105,7 +105,7 @@ describe('updateEnemy', () => {
 
     const startDist = dist(enemy.pos, player.pos)
     for (let i = 0; i < 20; i++) {
-      updateEnemy(enemy, player, scene, projectiles, NO_PAIN, 1 / 60)
+      updateEnemy(enemy, player, scene, projectiles, [enemy], NO_PAIN, 1 / 60)
     }
     const endDist = dist(enemy.pos, player.pos)
 
@@ -116,10 +116,10 @@ describe('updateEnemy', () => {
   it('hitscan: a zombieman hurts the player on a clear line of sight', () => {
     const scene = openScene()
     const player = createPlayer(vec(2.5, 2.5), 0)
-    const enemy = spawnEnemy('grunt', 6.5, 2.5) // within attackRange (12), LOS clear
+    const enemy = spawnEnemy('grunt', 6.5, 2.5) // within attackRange (32), LOS clear
     const before = player.health
 
-    updateEnemy(enemy, player, scene, [], NO_PAIN, 1 / 60)
+    updateEnemy(enemy, player, scene, [], [enemy], NO_PAIN, 1 / 60)
 
     expect(enemy.state).toBe('attack')
     expect(player.health).toBeLessThan(before)
@@ -131,7 +131,7 @@ describe('updateEnemy', () => {
     const enemy = spawnEnemy('grunt', 6.5, 2.5) // a wall at column 4 blocks sight
     const before = player.health
 
-    updateEnemy(enemy, player, scene, [], NO_PAIN, 1 / 60)
+    updateEnemy(enemy, player, scene, [], [enemy], NO_PAIN, 1 / 60)
 
     // Idle stays idle (never saw the player), so no shot.
     expect(player.health).toBe(before)
@@ -143,7 +143,7 @@ describe('updateEnemy', () => {
     const enemy = spawnEnemy('imp', 6.5, 2.5) // outside melee, inside attackRange
     const projectiles: Projectile[] = []
 
-    updateEnemy(enemy, player, scene, projectiles, NO_PAIN, 1 / 60)
+    updateEnemy(enemy, player, scene, projectiles, [enemy], NO_PAIN, 1 / 60)
 
     expect(enemy.state).toBe('attack')
     expect(projectiles.length).toBe(1)
@@ -158,7 +158,7 @@ describe('updateEnemy', () => {
     const enemy = spawnEnemy('mancubus', 10.5, 2.5)
     const projectiles: Projectile[] = []
 
-    updateEnemy(enemy, player, scene, projectiles, NO_PAIN, 1 / 60)
+    updateEnemy(enemy, player, scene, projectiles, [enemy], NO_PAIN, 1 / 60)
 
     expect(projectiles.length).toBe(6)
   })
@@ -170,12 +170,12 @@ describe('updateEnemy', () => {
     const before = player.health
 
     // First tick: in range + off cooldown ⇒ begins a charge dash.
-    updateEnemy(enemy, player, scene, [], NO_PAIN, 1 / 60)
+    updateEnemy(enemy, player, scene, [], [enemy], NO_PAIN, 1 / 60)
     expect(enemy.charging).toBe(true)
 
     // Run until the dash reaches the player and deals contact damage.
     for (let i = 0; i < 600 && enemy.charging === true; i++) {
-      updateEnemy(enemy, player, scene, [], NO_PAIN, 1 / 60)
+      updateEnemy(enemy, player, scene, [], [enemy], NO_PAIN, 1 / 60)
     }
     expect(enemy.charging).toBe(false)
     expect(player.health).toBeLessThan(before)
@@ -186,7 +186,7 @@ describe('updateEnemy', () => {
     const player = createPlayer(vec(2.5, 2.5), 0)
     const enemy = spawnEnemy('lostSoul', 7.5, 2.5)
 
-    updateEnemy(enemy, player, scene, [], NO_PAIN, 1 / 60)
+    updateEnemy(enemy, player, scene, [], [enemy], NO_PAIN, 1 / 60)
     expect(enemy.charging).toBe(true)
 
     // painChance 1.0 ⇒ any hit flinches; MID makes chance() true and the hit non-lethal.
@@ -203,7 +203,7 @@ describe('updateEnemy', () => {
     const startPos = { x: barrel.pos.x, y: barrel.pos.y }
 
     for (let i = 0; i < 30; i++) {
-      updateEnemy(barrel, player, scene, [], NO_PAIN, 1 / 60)
+      updateEnemy(barrel, player, scene, [], [barrel], NO_PAIN, 1 / 60)
     }
 
     expect(barrel.pos).toEqual(startPos) // stationary
@@ -217,7 +217,7 @@ describe('updateEnemy', () => {
     const enemy = spawnEnemy('cyberdemon', 12.5, 2.5) // inside attackRange (18), LOS clear
     const projectiles: Projectile[] = []
 
-    updateEnemy(enemy, player, scene, projectiles, NO_PAIN, 1 / 60)
+    updateEnemy(enemy, player, scene, projectiles, [enemy], NO_PAIN, 1 / 60)
 
     expect(enemy.state).toBe('attack')
     // attackShots 3 ⇒ a tight burst of three rockets, all aimed at the player (−x).
@@ -233,7 +233,7 @@ describe('updateEnemy', () => {
     expect(ENEMY_DEFS.spiderMastermind.splashImmune).toBe(true)
     const before = player.health
 
-    updateEnemy(enemy, player, scene, [], NO_PAIN, 1 / 60)
+    updateEnemy(enemy, player, scene, [], [enemy], NO_PAIN, 1 / 60)
 
     expect(enemy.state).toBe('attack')
     // 3 bullets of 5/10/15 each land on a clear line of sight — a chunk of damage.
@@ -247,13 +247,57 @@ describe('updateEnemy', () => {
     expect(ENEMY_DEFS.archvile.archetype).toBe('vile')
     const before = player.health
 
-    updateEnemy(enemy, player, scene, [], NO_PAIN, 1 / 60)
+    updateEnemy(enemy, player, scene, [], [enemy], NO_PAIN, 1 / 60)
 
     expect(enemy.state).toBe('attack')
     const dealt = before - player.health
     // Flat 20 + a 0..70 distance-falloff bonus (≈20..90 total), no projectile spawned.
     expect(dealt).toBeGreaterThanOrEqual(20)
     expect(dealt).toBeLessThanOrEqual(90)
+  })
+
+  it('infight: an enemy with target=another-enemy attacks THAT enemy, not the player', () => {
+    const scene = openScene()
+    const player = createPlayer(vec(2.5, 2.5), 0)
+    // A grunt (hitscan) at (6.5, 8.5) whose infight target is a demon lined up beside it.
+    const attacker = spawnEnemy('grunt', 6.5, 8.5)
+    const victim = spawnEnemy('demon', 6.5, 4.5) // in LOS + range of the attacker
+    attacker.target = victim
+    const playerBefore = player.health
+    const victimBefore = victim.health
+
+    updateEnemy(attacker, player, scene, [], [attacker, victim], NO_PAIN, 1 / 60)
+
+    expect(attacker.state).toBe('attack')
+    // The target enemy took the hit; the player is untouched.
+    expect(victim.health).toBeLessThan(victimBefore)
+    expect(player.health).toBe(playerBefore)
+  })
+
+  it('infight: the target is dropped and the player resumed once the target dies', () => {
+    const scene = openScene()
+    const player = createPlayer(vec(2.5, 2.5), 0)
+    const attacker = spawnEnemy('grunt', 6.5, 2.5) // in LOS + range of the player
+    const victim = spawnEnemy('demon', 20.5, 20.5) // far away
+    attacker.target = victim
+    // Kill the victim outright: resolveTarget must clear the stale target.
+    damageEnemy(victim, ENEMY_DEFS.demon.maxHealth, NO_PAIN)
+    expect(victim.state).toBe('dying')
+
+    const before = player.health
+    updateEnemy(attacker, player, scene, [], [attacker, victim], NO_PAIN, 1 / 60)
+
+    // Target gone ⇒ reverts to the player, who is in range and now takes the shot.
+    expect(attacker.target).toBeNull()
+    expect(player.health).toBeLessThan(before)
+  })
+
+  it('infight: an idle monster wakes into the chase when hurt (provocation)', () => {
+    const enemy = spawnEnemy('demon', 6.5, 2.5)
+    expect(enemy.state).toBe('idle')
+    // A non-lethal hit (painChance roll false via NO_PAIN) still wakes it to chase.
+    damageEnemy(enemy, 5, NO_PAIN)
+    expect(enemy.state).toBe('chase')
   })
 
   it('vile: an arch-vile fire deals NOTHING when LOS is broken on the firing tick', () => {
@@ -267,7 +311,7 @@ describe('updateEnemy', () => {
     // by placing it where the chase gate would pass only if it could see — here it can't,
     // so the player must be unharmed.
     for (let i = 0; i < 10; i++) {
-      updateEnemy(enemy, player, scene, [], NO_PAIN, 1 / 60)
+      updateEnemy(enemy, player, scene, [], [enemy], NO_PAIN, 1 / 60)
     }
 
     expect(player.health).toBe(before)

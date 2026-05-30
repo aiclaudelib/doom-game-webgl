@@ -137,6 +137,9 @@ export type PickupKind =
   | 'medkit'
   | 'armor'
   | 'bullets'
+  // Dropped clip from a slain Zombieman — a HALF clip (5 bullets), the canonical
+  // dropped-ammo halving (doomBehaviorSpec.md §3.4 / §5 #18). Reuses the CLIP sprite/icon.
+  | 'clipDropped'
   | 'shells'
   | 'shotgun'
   | 'chaingun'
@@ -504,6 +507,12 @@ export interface EnemyDef {
    * barrel and the corpse-less Lost Soul (world's resurrection scan honours it).
    */
   readonly raisable?: boolean
+  /**
+   * Pickup spawned at the corpse on death (doomBehaviorSpec.md §3.1 / §5 #18): the
+   * Zombieman drops a half clip ('clipDropped' = 5 bullets), the Shotgun guy/Chaingunner
+   * drop their weapon. Omitted ⇒ the kind drops nothing (barrels, bosses, the rest).
+   */
+  readonly drop?: PickupKind
 }
 
 export interface Enemy {
@@ -532,6 +541,13 @@ export interface Enemy {
   justRaised?: boolean
   /** Arch-vile: seconds until the next resurrection scan is allowed. */
   raiseCooldown?: number
+  /**
+   * Infighting target (doomBehaviorSpec.md §4 / §5 #20): when set to another live enemy,
+   * this monster chases + attacks THAT enemy instead of the player. undefined/null = the
+   * player. Resolved per tick in updateEnemy (cleared if the target dies); a plain
+   * reference, never a recursive structure.
+   */
+  target?: Enemy | null
 }
 
 export interface Projectile {
@@ -549,6 +565,11 @@ export interface Projectile {
   /** BFG: frozen firing origin + angle so the spray ignores live player turning. */
   originPos?: Vec2
   originAngle?: number
+  /**
+   * Infighting (doomBehaviorSpec.md §4 / §5 #20): the enemy that fired this missile (so a
+   * non-owner enemy it strikes retaliates against the owner). undefined/null = a player shot.
+   */
+  owner?: Enemy | null
 }
 
 /** What a projectile hit this step — world.ts applies the actual damage. */

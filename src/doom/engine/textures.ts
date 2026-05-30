@@ -1233,6 +1233,8 @@ const PICKUP_ICONS: Readonly<Record<PickupKind, IconBuilder>> = {
   backpack: () => backpackIcon(),
   // Ammo (clips / boxes / shells).
   bullets: () => clipIcon(),
+  // Dropped half-clip — same clip icon as a full clip (just grants 5 bullets).
+  clipDropped: () => clipIcon(),
   bulletBox: () => boxIcon(pal('yellow'), false),
   shells: () => shellsIcon(),
   shellBox: () => boxIcon(pal('red'), false),

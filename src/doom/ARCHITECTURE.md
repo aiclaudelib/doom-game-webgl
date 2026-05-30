@@ -22,8 +22,9 @@ TS operating on typed arrays, so it is unit-testable under jsdom.
 - **`noUncheckedIndexedAccess` is on.** Indexing arrays/`Record`/tuples yields `T | undefined`.
   - Guard or default: `const row = grid[y] ?? 0`. Store maps as **flat typed arrays** with accessor
     functions that bounds-check and return a default.
-  - **Typed-array element access (`Uint8ClampedArray`, `Float32Array`) returns `number`** — no guard
-    needed. Keep hot pixel loops on typed arrays.
+  - **Typed-array element READS are still `number | undefined` under this TS version** — guard with
+    `?? 0` (see `engine/framebuffer.ts`), or read bytes via `DataView.getUint8/16/32` (returns
+    `number`). Writing to a typed-array index is fine. (Earlier drafts of this note were wrong.)
   - Non-empty tuple types make element 0 non-optional: `readonly [T, ...T[]]` ⇒ `items[0]: T`.
 - **No import cycles** (`noImportCycles` is an error). Obey the per-module "may import" lists below.
   Layering: `config`/`types` ← `core` ← `engine/*` (draw + render) ← `game/*` ← `ui/*` ← `engine.ts`
@@ -477,3 +478,50 @@ E2E (`tests/e2e/{smoke,gameplay}.spec.ts`, prod preview): canvas present & sized
 errors**; pixels non-blank; menu→New Game (Enter) changes the frame; `KeyW`/`ArrowLeft`/`Space`
 move/turn/fire and the frame keeps changing; screenshots at menu + in-game. Use keyboard only
 (pointer lock is unavailable headless). Sample pixels via `canvas.toDataURL()` or a readback.
+
+---
+
+## 7. Sprite atlas pipeline (real Doom art)
+
+Art is **transcoded offline** from Freedoom (`assets/freedoom2.wad`, BSD, gitignored) into a
+committed atlas, and consumed at runtime with a procedural fallback. **ART is generated;
+BEHAVIOUR is hand-authored** from `doomBehaviorSpec.md` — regenerating the atlas never touches
+gameplay numbers.
+
+### Build time — `scripts/wad/*` + `scripts/build-sprites.ts` (run with **bun**, NOT linted/tsc'd
+by the app config; type-checked transitively via `tests/doom/sprites/*`)
+- `wad/readWad.ts` (WAD header+directory → `Lump[]`, `spriteLumps`), `wad/palette.ts` (PLAYPAL →
+  256-RGB palette 0), `wad/decodePatch.ts` (Doom picture format → RGBA + Doom offsets),
+  `wad/spriteIndex.ts` (group `NAME+frame+rot`, expand 8-char mirror pairs), `wad/packAtlas.ts`
+  (bbox-crop + shelf-pack), `wad/encodePng.ts` (RGBA → PNG via `node:zlib`).
+- `build-sprites.ts` orchestrates → `public/sprites/{atlas.png, atlas.json, CREDITS.md}`.
+  Deterministic: same WAD + code ⇒ byte-identical output. `bun run build:sprites`.
+
+### Runtime — `engine/sprites/*` (engine layer; headless-safe)
+- `atlasTypes.ts` — manifest type contract (zero-import leaf).
+- `atlasLoader.ts` — `loadAtlas(url): Promise<SpriteAtlas | null>`; fetch JSON + decode PNG via
+  `Image`→canvas→`ImageData`. Returns `null` (never throws) when `fetch`/`Image`/canvas absent.
+- `spriteAtlas.ts` — `SpriteAtlas` lazily slices frames into `Texture`s; `actorFrame(name,letter,
+  rot)→{tex,flip,ox,oy}`; pure `spriteRotation(angle, camX, camY, x, y)→1..8`.
+
+### Render — `engine/sprites.ts`
+`SpriteInstance` carries optional `flip / ox / oy / pxW / pxH` (Doom-offset anchoring + mirror) and
+`bright / fuzz`. `renderSprites(fb, sprites, camera, depth, fullBright?)` shades each billboard by
+`spriteIntensity(depth, bright, fullBright)` (= `fogIntensity` unless bright / light-amp visor) and
+applies a deterministic `(sx+y)&1` fuzz dither for spectres. The legacy bottom-centre path is kept
+for the procedural fallback (sprites with no `pxH`).
+
+### Behaviour tables — `game/actorDefs.ts`
+35 Hz state tables (`seq('A4 B4 C4 D4', true)` DSL) + `resolveActorFrame`. `game/prop.ts` is the
+analogous render-only `PROP_DEFS` decor table. The atlas swaps into a live `World` via
+`World.setSpriteAtlas`; `engine.ts` kicks off `loadAtlas` async and re-applies on `loadLevel`.
+
+### Notable signature drift from the original contract
+- `World` constructor is `(level, assets, rng, settings)`; `WorldEvents` includes `dryFired`.
+- `updateEnemy(enemy, player, scene, projectiles, enemies, rng, dt)` — gained `enemies` for
+  infighting target resolution. `updateProjectile(proj, scene, player, enemies, dt)` returns a
+  `ProjectileImpact` (cycle-safe: it never imports `enemy.ts`; `world.ts` applies all damage/splash/
+  spray). `weaponBySlot(slot, player)`; weapon slots are `Digit1..Digit7`.
+- `EnemyDef` is archetype-driven (`melee|hitscan|projectile|charger|spawner|vile|inert`) with damage
+  dice, `splashImmune`, `raisable`, `drop`, `flying`, `fuzz`. `EnemyKind` includes `barrel` (an
+  inert, shootable, exploding "enemy").

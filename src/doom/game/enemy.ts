@@ -78,7 +78,9 @@ export const ENEMY_DEFS: Readonly<Record<EnemyKind, EnemyDef>> = {
     maxHealth: 20,
     speed: 1.09,
     radius: 0.31,
-    attackRange: 12,
+    // Hitscan monsters engage at Doom's MISSILERANGE (2048u = 32 cells) with LOS, not just
+    // point-blank — they fire across the level (doomBehaviorSpec.md §3.1 / §5 #22). LOS-gated.
+    attackRange: 32,
     attackCooldown: 1.0,
     painChance: 0.78,
     scale: 0.9,
@@ -88,13 +90,16 @@ export const ENEMY_DEFS: Readonly<Record<EnemyKind, EnemyDef>> = {
     damageMul: 3,
     attackShots: 1,
     raisable: true,
+    // Drops a half clip (5 bullets) on death — the canonical dropped-ammo halving (§3.1).
+    drop: 'clipDropped',
   },
   shotgunGuy: {
     kind: 'shotgunGuy',
     maxHealth: 30,
     speed: 1.46,
     radius: 0.31,
-    attackRange: 12,
+    // MISSILERANGE engage (32 cells), LOS-gated (§3.1 / §5 #22).
+    attackRange: 32,
     attackCooldown: 1.2,
     painChance: 0.66,
     scale: 0.92,
@@ -104,13 +109,16 @@ export const ENEMY_DEFS: Readonly<Record<EnemyKind, EnemyDef>> = {
     damageMul: 3,
     attackShots: 3,
     raisable: true,
+    // Drops its weapon on death (§3.1) — the shotgun pickup (which carries 8 shells).
+    drop: 'shotgun',
   },
   chaingunner: {
     kind: 'chaingunner',
     maxHealth: 70,
     speed: 1.46,
     radius: 0.31,
-    attackRange: 12,
+    // MISSILERANGE engage (32 cells), LOS-gated (§3.1 / §5 #22).
+    attackRange: 32,
     attackCooldown: 0.45,
     painChance: 0.66,
     scale: 0.95,
@@ -120,6 +128,8 @@ export const ENEMY_DEFS: Readonly<Record<EnemyKind, EnemyDef>> = {
     damageMul: 3,
     attackShots: 1,
     raisable: true,
+    // Drops its weapon on death (§3.1) — the chaingun pickup (which carries 10 bullets).
+    drop: 'chaingun',
   },
   imp: {
     kind: 'imp',
@@ -374,7 +384,8 @@ export const ENEMY_DEFS: Readonly<Record<EnemyKind, EnemyDef>> = {
     maxHealth: 3000,
     speed: 2.19,
     radius: 2.0,
-    attackRange: 18,
+    // Hitscan boss: MISSILERANGE engage (32 cells), LOS-gated (§3.1 / §5 #22).
+    attackRange: 32,
     attackCooldown: 0.3,
     painChance: 0.156,
     scale: 2.0,
@@ -432,16 +443,39 @@ function rollDamage(rng: Rng, sides: number, mul: number): number {
 }
 
 /**
+ * Resolve an enemy's effective target this tick (doomBehaviorSpec.md §4 / §5 #20): an
+ * infight `enemy.target` is honoured only while that enemy is still in the live roster AND
+ * a live, attackable monster — otherwise it is cleared and the enemy reverts to hunting the
+ * PLAYER. Returns null to mean "the player" so the caller threads player.pos uniformly.
+ */
+function resolveTarget(enemy: Enemy, enemies: readonly Enemy[]): Enemy | null {
+  const target = enemy.target
+  if (target === undefined || target === null) {
+    return null
+  }
+  const stillTargetable =
+    target.alive && target.state !== 'dead' && target.state !== 'dying' && enemies.includes(target)
+  if (!stillTargetable) {
+    enemy.target = null
+    return null
+  }
+  return target
+}
+
+/**
  * Advance one enemy by dt. Corpses hold; dying runs its timer then settles into
  * a corpse; hurt flinches briefly then chases. A charging lost soul dashes along
- * its chargeVel until it touches the player or a wall. Otherwise the enemy chases
- * the player whenever it can see them, attacking when in range and off cooldown.
+ * its chargeVel until it touches its target or a wall. Otherwise the enemy chases
+ * its TARGET (the player, or — when infighting — the monster that last hurt it)
+ * whenever it can see them, attacking when in range and off cooldown. `enemies` is
+ * the live roster so an infighting monster can damage a TARGET enemy (§4 / §5 #20).
  */
 export function updateEnemy(
   enemy: Enemy,
   player: Player,
   scene: SceneQuery,
   projectiles: Projectile[],
+  enemies: readonly Enemy[],
   rng: Rng,
   dt: number,
 ): void {
@@ -463,11 +497,15 @@ export function updateEnemy(
     return
   }
 
+  // Whom this enemy is hunting this tick: an infight target enemy, else the player.
+  const targetEnemy = resolveTarget(enemy, enemies)
+  const targetPos = targetEnemy?.pos ?? player.pos
+
   // A charging lost soul keeps dashing even mid-flinch is not allowed: pain
   // clears the charge below in damageEnemy. While charging, ignore the normal
   // chase logic and run the dash.
   if (enemy.charging === true) {
-    chargeStep(enemy, player, scene, rng)
+    chargeStep(enemy, player, scene, targetEnemy, rng)
     return
   }
 
@@ -484,8 +522,8 @@ export function updateEnemy(
     if (enemy.stateTimer <= 0) {
       enemy.state = 'chase'
     }
-    // Keep facing the player through the swing so projectiles aim true.
-    facePlayer(enemy, player.pos)
+    // Keep facing the target through the swing so projectiles aim true.
+    facePlayer(enemy, targetPos)
     return
   }
 
@@ -495,8 +533,8 @@ export function updateEnemy(
     return
   }
 
-  // idle / chase: only act when the player is visible.
-  if (!lineOfSight(scene, enemy.pos, player.pos)) {
+  // idle / chase: only act when the target is visible.
+  if (!lineOfSight(scene, enemy.pos, targetPos)) {
     if (enemy.state === 'idle') {
       return
     }
@@ -506,19 +544,19 @@ export function updateEnemy(
   }
 
   enemy.state = 'chase'
-  facePlayer(enemy, player.pos)
+  facePlayer(enemy, targetPos)
 
   const def = enemyDef(enemy.kind)
-  const toPlayer = sub(player.pos, enemy.pos)
-  const distance = Math.hypot(toPlayer.x, toPlayer.y)
+  const toTarget = sub(targetPos, enemy.pos)
+  const distance = Math.hypot(toTarget.x, toTarget.y)
 
   if (distance <= def.attackRange && enemy.attackTimer <= 0) {
-    attack(enemy, player, scene, projectiles, def, rng, distance)
+    attack(enemy, player, scene, projectiles, def, rng, distance, targetEnemy)
     return
   }
 
-  // Chase: step toward the player, sliding along walls. A little angular wander
-  // keeps the swarm from collapsing onto a single line into the player.
+  // Chase: step toward the target, sliding along walls. A little angular wander
+  // keeps the swarm from collapsing onto a single line into the target.
   const stopDistance = def.archetype === 'melee' ? def.attackRange * 0.6 : 1.2
   if (distance > stopDistance) {
     const wander = randRange(rng, -AIM_JITTER, AIM_JITTER)
@@ -543,6 +581,11 @@ export function damageEnemy(enemy: Enemy, amount: number, rng: Rng): void {
     enemy.charging = false
     enemy.chargeVel = undefined
     return
+  }
+  // Being hurt wakes an idle, non-inert monster into the chase (so a provoked infight
+  // victim turns and pursues its attacker even if it had not yet seen the player).
+  if (enemy.state === 'idle' && enemyDef(enemy.kind).archetype !== 'inert') {
+    enemy.state = 'chase'
   }
   if (chance(rng, enemyDef(enemy.kind).painChance)) {
     enemy.state = 'hurt'
@@ -585,9 +628,25 @@ function meleeReach(def: EnemyDef): number {
 }
 
 /**
+ * Roll a melee/contact damage value and apply it to whoever is being attacked: the
+ * infight TARGET enemy (damageEnemy) or the player (damagePlayer). Centralises the
+ * "hit my current target" decision so every melee/charge branch stays single-source.
+ */
+function hitTarget(player: Player, targetEnemy: Enemy | null, amount: number, rng: Rng): void {
+  if (targetEnemy !== null) {
+    damageEnemy(targetEnemy, amount, rng)
+  } else {
+    damagePlayer(player, amount)
+  }
+}
+
+/**
  * Execute an attack, dispatched on the archetype. Hitscan applies bullets on LOS;
  * projectile spawns one-or-more missiles (fan for the mancubus); melee bites in
- * range; charger launches a dash. Hybrids prefer their melee branch up close.
+ * range; charger launches a dash. Hybrids prefer their melee branch up close. When
+ * `targetEnemy` is set the enemy is infighting (doomBehaviorSpec.md §4 / §5 #20): the
+ * SAME dice are applied to that monster instead of the player; projectiles carry
+ * owner=self so they hit non-owner enemies (incl. the target).
  */
 function attack(
   enemy: Enemy,
@@ -597,29 +656,32 @@ function attack(
   def: EnemyDef,
   rng: Rng,
   distance: number,
+  targetEnemy: Enemy | null,
 ): void {
   enemy.state = 'attack'
   enemy.stateTimer = ATTACK_POSE_TIME
   enemy.attackTimer = def.attackCooldown
 
-  // Hybrids (imp/caco/revenant) bite when the player is within melee reach.
+  // Hybrids (imp/caco/revenant) bite when the target is within melee reach.
   if (def.hasMelee === true && distance <= meleeReach(def)) {
-    damagePlayer(
+    hitTarget(
       player,
+      targetEnemy,
       rollDamage(rng, def.meleeSides ?? def.damageSides, def.meleeMul ?? def.damageMul),
+      rng,
     )
     return
   }
 
   switch (def.archetype) {
     case 'hitscan':
-      hitscanAttack(enemy, player, scene, def, rng)
+      hitscanAttack(enemy, player, scene, def, rng, targetEnemy)
       return
     case 'projectile':
-      projectileAttack(enemy, player, projectiles, def, rng)
+      projectileAttack(enemy, player, projectiles, def, rng, targetEnemy)
       return
     case 'charger':
-      beginCharge(enemy, player, def)
+      beginCharge(enemy, targetEnemy?.pos ?? player.pos, def)
       return
     case 'spawner':
       // Pain Elemental: SIGNAL a Lost-Soul spawn for world.ts to consume (world owns
@@ -627,12 +689,12 @@ function attack(
       enemy.spawnPending = (enemy.spawnPending ?? 0) + 1
       return
     case 'vile':
-      vileFireAttack(enemy, player, scene, rng)
+      vileFireAttack(enemy, player, scene, rng, targetEnemy)
       return
     default:
       // melee: bite when in range.
       if (distance <= meleeReach(def) || distance <= def.attackRange) {
-        damagePlayer(player, rollDamage(rng, def.damageSides, def.damageMul))
+        hitTarget(player, targetEnemy, rollDamage(rng, def.damageSides, def.damageMul), rng)
       }
   }
 }
@@ -642,6 +704,8 @@ function attack(
  * lands. attackShots bullets (zombieman 1, shotgun guy 3) each roll the dice.
  * Against a blurred player (partial invisibility) each bullet rolls a wide aim
  * offset and whips clean past when it exceeds the miss threshold (§3.4 PINS).
+ * When infighting (`targetEnemy` set) the same dice hit that monster (no blur),
+ * still LOS-gated against the target's position (§4 / §5 #20).
  */
 function hitscanAttack(
   enemy: Enemy,
@@ -649,11 +713,14 @@ function hitscanAttack(
   scene: SceneQuery,
   def: EnemyDef,
   rng: Rng,
+  targetEnemy: Enemy | null,
 ): void {
-  if (!lineOfSight(scene, enemy.pos, player.pos)) {
+  const targetPos = targetEnemy?.pos ?? player.pos
+  if (!lineOfSight(scene, enemy.pos, targetPos)) {
     return
   }
-  const blurred = player.blurTimer > 0
+  // Blur only protects the PLAYER; an infight target enemy is hit reliably.
+  const blurred = targetEnemy === null && player.blurTimer > 0
   for (let i = 0; i < def.attackShots; i++) {
     if (
       blurred &&
@@ -661,7 +728,7 @@ function hitscanAttack(
     ) {
       continue // aim thrown wide by the blur
     }
-    damagePlayer(player, rollDamage(rng, def.damageSides, def.damageMul))
+    hitTarget(player, targetEnemy, rollDamage(rng, def.damageSides, def.damageMul), rng)
   }
 }
 
@@ -673,15 +740,28 @@ function hitscanAttack(
  * total), and we fake the canonical upward momz launch as an extra screen kick by
  * topping up the player's damageFlash (the engine reads it as a HUD/screen tint).
  */
-function vileFireAttack(enemy: Enemy, player: Player, scene: SceneQuery, rng: Rng): void {
-  if (!lineOfSight(scene, enemy.pos, player.pos)) {
+function vileFireAttack(
+  enemy: Enemy,
+  player: Player,
+  scene: SceneQuery,
+  rng: Rng,
+  targetEnemy: Enemy | null,
+): void {
+  const targetPos = targetEnemy?.pos ?? player.pos
+  if (!lineOfSight(scene, enemy.pos, targetPos)) {
     return
   }
-  void rng // the vile fire is non-randomized (flat 20 + deterministic falloff)
-  const toPlayer = sub(player.pos, enemy.pos)
-  const distance = Math.hypot(toPlayer.x, toPlayer.y)
+  const toTarget = sub(targetPos, enemy.pos)
+  const distance = Math.hypot(toTarget.x, toTarget.y)
   const near = clamp(1 - distance / VILE_FIRE_RANGE, 0, 1)
   const damage = VILE_FIRE_BASE + Math.round(VILE_FIRE_FALLOFF * near)
+  if (targetEnemy !== null) {
+    // Infighting: the fire blast is non-randomized but damageEnemy needs the rng for its
+    // painChance roll — pass it through (the damage value itself stays deterministic).
+    damageEnemy(targetEnemy, damage, rng)
+    return
+  }
+  void rng // vs the player the vile fire is fully non-randomized (flat 20 + falloff)
   damagePlayer(player, damage)
   // Fake the +momz upward thrust as a screen kick (no Z axis on the 2D plane).
   player.damageFlash = 1
@@ -700,14 +780,16 @@ function projectileAttack(
   projectiles: Projectile[],
   def: EnemyDef,
   rng: Rng,
+  targetEnemy: Enemy | null,
 ): void {
   const kind = ENEMY_PROJECTILE[enemy.kind] ?? 'fireball'
   const pdef = PROJECTILE_DEFS[kind]
   const speed = def.projectileSpeed ?? pdef.speed
   const shots = def.attackShots
   // Blur throws the aim off (smaller penalty than hitscan); homing tracers ignore it (§3.4).
+  // It only protects the PLAYER — an infight target enemy is aimed at cleanly.
   const blur =
-    player.blurTimer > 0 && pdef.homing !== true
+    targetEnemy === null && player.blurTimer > 0 && pdef.homing !== true
       ? randRange(rng, -BLUR_PROJECTILE_OFFSET, BLUR_PROJECTILE_OFFSET)
       : 0
   for (let i = 0; i < shots; i++) {
@@ -715,13 +797,14 @@ function projectileAttack(
       shots > 1 ? (i - (shots - 1) / 2) * FAT_SPREAD : randRange(rng, -AIM_JITTER, AIM_JITTER)
     const dir = fromAngle(enemy.angle + spread + blur)
     const dmg = (1 + Math.floor(rng() * 8)) * pdef.base
-    projectiles.push(spawnProjectile(kind, enemy.pos, dir, dmg, true, speed))
+    // owner=self so an enemy missile strikes any non-owner enemy in its path (infighting).
+    projectiles.push(spawnProjectile(kind, enemy.pos, dir, dmg, true, speed, enemy))
   }
 }
 
-/** Begin a lost-soul charge: lock chargeVel toward the player at the dash speed. */
-function beginCharge(enemy: Enemy, player: Player, def: EnemyDef): void {
-  const dir = normalize(sub(player.pos, enemy.pos))
+/** Begin a lost-soul charge: lock chargeVel toward `targetPos` at the dash speed. */
+function beginCharge(enemy: Enemy, targetPos: Vec2, def: EnemyDef): void {
+  const dir = normalize(sub(targetPos, enemy.pos))
   enemy.charging = true
   enemy.chargeVel = scale(dir, def.projectileSpeed ?? 0)
 }
@@ -735,25 +818,35 @@ function beginCharge(enemy: Enemy, player: Player, def: EnemyDef): void {
 export function startLostSoulCharge(skull: Enemy, player: Player): void {
   skull.state = 'attack'
   facePlayer(skull, player.pos)
-  beginCharge(skull, player, enemyDef(skull.kind))
+  beginCharge(skull, player.pos, enemyDef(skull.kind))
 }
 
 /**
- * Advance a charging lost soul one fixed step. It moves along chargeVel; touching
- * the player deals contact damage and ends the charge; hitting a wall ends it too.
- * Either way the cooldown is set so it pauses before the next dash.
+ * Advance a charging lost soul one fixed step. It moves along chargeVel; touching its
+ * TARGET (the infight enemy, else the player) deals contact damage and ends the charge;
+ * hitting a wall ends it too. Either way the cooldown is set so it pauses before the next
+ * dash (doomBehaviorSpec.md §3.1 / §4 infighting).
  */
-function chargeStep(enemy: Enemy, player: Player, scene: SceneQuery, rng: Rng): void {
+function chargeStep(
+  enemy: Enemy,
+  player: Player,
+  scene: SceneQuery,
+  targetEnemy: Enemy | null,
+  rng: Rng,
+): void {
   const def = enemyDef(enemy.kind)
   const vel = enemy.chargeVel ?? { x: 0, y: 0 }
   const step = scale(vel, 1 / 60)
   const before = enemy.pos
   const moved = moveWithCollision(scene, before, step, def.radius)
 
-  // Contact with the player: deal contact damage, stop, go on cooldown.
-  const reach = def.radius + PLAYER_RADIUS
-  if (Math.hypot(player.pos.x - moved.x, player.pos.y - moved.y) <= reach) {
-    damagePlayer(player, rollDamage(rng, def.damageSides, def.damageMul))
+  // Contact with the target: deal contact damage, stop, go on cooldown. An infight
+  // target enemy uses its own radius for the reach; the player uses PLAYER_RADIUS.
+  const targetPos = targetEnemy?.pos ?? player.pos
+  const targetRadius = targetEnemy !== null ? enemyDef(targetEnemy.kind).radius : PLAYER_RADIUS
+  const reach = def.radius + targetRadius
+  if (Math.hypot(targetPos.x - moved.x, targetPos.y - moved.y) <= reach) {
+    hitTarget(player, targetEnemy, rollDamage(rng, def.damageSides, def.damageMul), rng)
     endCharge(enemy, def)
     return
   }

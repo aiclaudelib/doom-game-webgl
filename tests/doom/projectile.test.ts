@@ -62,6 +62,32 @@ describe('updateProjectile', () => {
     expect(player.health).toBe(100)
   })
 
+  it('an enemy missile strikes a non-owner enemy (infighting collision)', () => {
+    const scene = makeScene(() => false)
+    const player = createPlayer(vec(20, 20), 0) // far away — the missile reaches the enemy first
+    const owner: Enemy = spawnEnemy('imp', 1.0, 1.5)
+    const victim: Enemy = spawnEnemy('demon', 2.0, 1.5)
+    // Imp fireball fired BY owner, heading +x toward the victim sitting at x≈2.0.
+    const proj = spawnProjectile('fireball', vec(2.0, 1.5), vec(1, 0), 12, true, 5.47, owner)
+    expect(proj.owner).toBe(owner)
+    const impact = updateProjectile(proj, scene, player, [owner, victim], 1 / 60)
+    expect(impact.hit).toBe('enemy')
+    expect(impact.enemyIndex).toBe(1) // the victim (index 1), never the owner
+    expect(proj.alive).toBe(false)
+  })
+
+  it('an enemy missile passes through its OWN owner (never self-hits)', () => {
+    const scene = makeScene(() => false)
+    const player = createPlayer(vec(20, 20), 0)
+    const owner: Enemy = spawnEnemy('imp', 2.0, 1.5)
+    // The missile spawns right on top of its owner; it must not register a hit on itself,
+    // and (no other enemy, player far) reports no impact this step.
+    const proj = spawnProjectile('fireball', vec(2.0, 1.5), vec(1, 0), 12, true, 5.47, owner)
+    const impact = updateProjectile(proj, scene, player, [owner], 1 / 60)
+    expect(impact.hit).toBe('none')
+    expect(proj.alive).toBe(true)
+  })
+
   it('homing tracer turns toward the player', () => {
     const scene = makeScene(() => false)
     // Tracer heads +x; the player sits well off to +y so the missile must turn.

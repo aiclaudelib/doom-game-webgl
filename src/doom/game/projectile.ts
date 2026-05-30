@@ -75,6 +75,7 @@ export function spawnProjectile(
   damage: number,
   fromEnemy: boolean,
   speed = PROJECTILE_SPEED,
+  owner: Enemy | null = null,
 ): Projectile {
   const def = PROJECTILE_DEFS[kind]
   const vel = scale(normalize(dir), speed)
@@ -86,6 +87,9 @@ export function spawnProjectile(
     fromEnemy,
     alive: true,
     animTimer: 0,
+  }
+  if (owner !== null) {
+    proj.owner = owner
   }
   if (def.homing === true) {
     proj.homing = true
@@ -137,7 +141,16 @@ export function updateProjectile(
   }
 
   // Enemy projectiles strike the player; player projectiles strike live enemies.
+  // For INFIGHTING (doomBehaviorSpec.md §4 / §5 #20) an enemy missile ALSO collides with
+  // any live, non-owner enemy in its path — world.ts turns that into a retaliation. We test
+  // the non-owner enemies first so a missile that grazes another monster provokes it; only
+  // if it misses every enemy does it fall through to the player check.
   if (proj.fromEnemy) {
+    const enemyHit = enemyCollision(proj, enemies, proj.owner ?? null)
+    if (enemyHit >= 0) {
+      proj.alive = false
+      return { hit: 'enemy', enemyIndex: enemyHit, pos: { x: proj.pos.x, y: proj.pos.y } }
+    }
     if (dist(proj.pos, player.pos) <= PROJECTILE_RADIUS) {
       proj.alive = false
       return { hit: 'player', enemyIndex: -1, pos: { x: proj.pos.x, y: proj.pos.y } }
@@ -145,18 +158,31 @@ export function updateProjectile(
     return NO_IMPACT
   }
 
-  for (let i = 0; i < enemies.length; i++) {
-    const enemy = enemies[i]
-    if (!isTargetable(enemy)) {
-      continue
-    }
-    if (dist(proj.pos, enemy.pos) <= ENEMY_HIT_RADIUS) {
-      proj.alive = false
-      return { hit: 'enemy', enemyIndex: i, pos: { x: proj.pos.x, y: proj.pos.y } }
-    }
+  const enemyHit = enemyCollision(proj, enemies, null)
+  if (enemyHit >= 0) {
+    proj.alive = false
+    return { hit: 'enemy', enemyIndex: enemyHit, pos: { x: proj.pos.x, y: proj.pos.y } }
   }
 
   return NO_IMPACT
+}
+
+/**
+ * Nearest live enemy whose centre is within ENEMY_HIT_RADIUS of the projectile, skipping
+ * `skip` (the firing enemy, so its own missile never hits itself). Returns the index or -1.
+ * Shared by the player-shot and enemy-infight paths so the collision rule stays single-source.
+ */
+function enemyCollision(proj: Projectile, enemies: readonly Enemy[], skip: Enemy | null): number {
+  for (let i = 0; i < enemies.length; i++) {
+    const enemy = enemies[i]
+    if (!isTargetable(enemy) || enemy === skip) {
+      continue
+    }
+    if (dist(proj.pos, enemy.pos) <= ENEMY_HIT_RADIUS) {
+      return i
+    }
+  }
+  return -1
 }
 
 /** Rotate proj.vel toward `target` by at most TRACER_TURN, keeping its speed. */
