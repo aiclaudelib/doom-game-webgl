@@ -10,6 +10,7 @@ import type {
   EnemyKind,
   Player,
   Projectile,
+  ProjectileKind,
   Rng,
   SceneQuery,
   Texture,
@@ -22,7 +23,7 @@ import { fromAngle, normalize, scale, sub } from '~/doom/core/vec'
 import { lineOfSight } from '~/doom/game/combat'
 import { moveWithCollision } from '~/doom/game/collision'
 import { damagePlayer } from '~/doom/game/player'
-import { spawnProjectile } from '~/doom/game/projectile'
+import { PROJECTILE_DEFS, spawnProjectile } from '~/doom/game/projectile'
 
 /** Seconds a flinch (hurt) lasts before the enemy resumes chasing. */
 const HURT_TIME = 0.25
@@ -36,6 +37,21 @@ const WALK_FRAME_TIME = 0.18
 const AIM_JITTER = 0.06
 /** Mancubus FATSPREAD: ANG90/8 = 11.25° between fan shots. */
 const FAT_SPREAD = Math.PI / 2 / 8
+
+/**
+ * Which typed missile each projectile monster fires (doomBehaviorSpec.md §3.3):
+ * caco→cacoball, hellKnight/baron→baronball, mancubus→fatshot, arachnotron→aplasma,
+ * revenant→tracer (homing); the imp keeps the classic fireball.
+ */
+const ENEMY_PROJECTILE: Partial<Record<EnemyKind, ProjectileKind>> = {
+  imp: 'fireball',
+  cacodemon: 'cacoball',
+  hellKnight: 'baronball',
+  baron: 'baronball',
+  mancubus: 'fatshot',
+  arachnotron: 'aplasma',
+  revenant: 'tracer',
+}
 
 /**
  * Static tuning per enemy kind, faithful to doomBehaviorSpec.md §3.1.
@@ -505,19 +521,23 @@ function hitscanAttack(
 }
 
 /**
- * Projectile: fire attackShots fireballs toward the player. A single shot uses the
- * facing angle with a touch of jitter; the mancubus (6 shots) fans them out in
- * ±FAT_SPREAD steps around the facing.
+ * Projectile: fire attackShots typed missiles toward the player. A single shot uses
+ * the facing angle with a touch of jitter; the mancubus (6 shots) fans them out in
+ * ±FAT_SPREAD steps around the facing. Per-shot damage is rolled from the missile's
+ * own base (1+floor(rng*8))*base and the missile carries its canonical speed; the
+ * revenant's tracer is homing (set on spawn from PROJECTILE_DEFS).
  */
 function projectileAttack(enemy: Enemy, projectiles: Projectile[], def: EnemyDef, rng: Rng): void {
-  const speed = def.projectileSpeed
+  const kind = ENEMY_PROJECTILE[enemy.kind] ?? 'fireball'
+  const pdef = PROJECTILE_DEFS[kind]
+  const speed = def.projectileSpeed ?? pdef.speed
   const shots = def.attackShots
   for (let i = 0; i < shots; i++) {
     const spread =
       shots > 1 ? (i - (shots - 1) / 2) * FAT_SPREAD : randRange(rng, -AIM_JITTER, AIM_JITTER)
     const dir = fromAngle(enemy.angle + spread)
-    const dmg = rollDamage(rng, def.damageSides, def.damageMul)
-    projectiles.push(spawnProjectile('fireball', enemy.pos, dir, dmg, true, speed))
+    const dmg = (1 + Math.floor(rng() * 8)) * pdef.base
+    projectiles.push(spawnProjectile(kind, enemy.pos, dir, dmg, true, speed))
   }
 }
 

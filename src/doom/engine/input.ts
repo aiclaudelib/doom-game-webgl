@@ -198,6 +198,15 @@ export class InputManager {
       case 'Digit4':
         this.weaponSlot = 4
         break
+      case 'Digit5':
+        this.weaponSlot = 5
+        break
+      case 'Digit6':
+        this.weaponSlot = 6
+        break
+      case 'Digit7':
+        this.weaponSlot = 7
+        break
       default:
         break
     }
@@ -247,6 +256,9 @@ export class InputManager {
       case 'Digit2':
       case 'Digit3':
       case 'Digit4':
+      case 'Digit5':
+      case 'Digit6':
+      case 'Digit7':
         return true
       default:
         return false

@@ -27,6 +27,8 @@ import { moveWithCollision } from '~/doom/game/collision'
 const START_BULLETS = 50
 const MAX_BULLETS = 200
 const MAX_SHELLS = 50
+const MAX_ROCKETS = 50
+const MAX_CELLS = 300
 
 /** Fresh player: fist + pistol owned, pistol selected, half a clip of bullets, full health. */
 export function createPlayer(start: Vec2, angle: number): Player {
@@ -35,12 +37,23 @@ export function createPlayer(start: Vec2, angle: number): Player {
     angle: normalizeAngle(angle),
     health: MAX_HEALTH,
     armor: 0,
-    ammo: { bullets: START_BULLETS, shells: 0 },
-    maxAmmo: { bullets: MAX_BULLETS, shells: MAX_SHELLS },
-    weapons: { fist: true, pistol: true, shotgun: false, chaingun: false },
+    ammo: { bullets: START_BULLETS, shells: 0, rockets: 0, cells: 0 },
+    maxAmmo: { bullets: MAX_BULLETS, shells: MAX_SHELLS, rockets: MAX_ROCKETS, cells: MAX_CELLS },
+    weapons: {
+      fist: true,
+      chainsaw: false,
+      pistol: true,
+      shotgun: false,
+      superShotgun: false,
+      chaingun: false,
+      rocket: false,
+      plasma: false,
+      bfg: false,
+    },
     keys: { red: false, blue: false, yellow: false },
     currentWeapon: 'pistol',
     pendingWeapon: null,
+    berserk: false,
     weaponState: 'ready',
     weaponTimer: 0,
     weaponFrame: 0,

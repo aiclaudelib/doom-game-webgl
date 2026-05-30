@@ -7,8 +7,13 @@ import type { AudioEngine } from '~/doom/audio/audio'
 export type SfxName =
   | 'pistol'
   | 'shotgun'
+  | 'superShotgun'
   | 'chaingun'
   | 'fist'
+  | 'chainsaw'
+  | 'rocket'
+  | 'plasma'
+  | 'bfg'
   | 'door'
   | 'groan'
   | 'hurt'
@@ -184,9 +189,39 @@ function synth(ctx: AudioContext, bus: GainNode, name: SfxName, now: number): vo
       oscVoice(ctx, bus, 'sine', 120, 50, 0, now, 0.14, THUMP_ADSR)
       break
     }
+    case 'superShotgun': {
+      // Beefier double-barrel: louder noise burst + a lower thump than the shotgun.
+      noiseVoice(ctx, bus, now, 0.16, 1400, { ...GUN_ADSR, decay: 0.12, release: 0.16, peak: 1 })
+      oscVoice(ctx, bus, 'sine', 100, 40, 0, now, 0.18, THUMP_ADSR)
+      break
+    }
     case 'fist': {
       oscVoice(ctx, bus, 'sine', 180, 70, 0, now, 0.06, THUMP_ADSR)
       noiseVoice(ctx, bus, now, 0.03, 800, { ...GUN_ADSR, peak: 0.4 })
+      break
+    }
+    case 'chainsaw': {
+      // Gnarly buzzing saw: a detuned mid-band growl plus a band of grit noise.
+      detunedPair(ctx, bus, 240, 220, 30, now, 0.12, GUN_ADSR)
+      noiseVoice(ctx, bus, now, 0.1, 1800, { ...GUN_ADSR, peak: 0.5 })
+      break
+    }
+    case 'rocket': {
+      // Launch whoosh: a falling roar of noise under a low thump.
+      noiseVoice(ctx, bus, now, 0.3, 900, { ...GUN_ADSR, decay: 0.2, release: 0.3, peak: 0.9 })
+      oscVoice(ctx, bus, 'sine', 90, 40, 0, now, 0.22, THUMP_ADSR)
+      break
+    }
+    case 'plasma': {
+      // Sci-fi zap: a bright square chirp gliding up with a touch of noise.
+      oscVoice(ctx, bus, 'square', 520, 880, 0, now, 0.06, BLIP_ADSR)
+      noiseVoice(ctx, bus, now, 0.04, 3000, { ...GUN_ADSR, peak: 0.35 })
+      break
+    }
+    case 'bfg': {
+      // Heavy charge-and-release: a deep detuned swell with a wide noise body.
+      detunedPair(ctx, bus, 160, 320, 24, now, 0.4, DIE_ADSR)
+      noiseVoice(ctx, bus, now, 0.4, 1400, DIE_NOISE_ADSR)
       break
     }
     case 'door': {

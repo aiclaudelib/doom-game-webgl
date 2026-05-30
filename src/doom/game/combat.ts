@@ -6,6 +6,15 @@ import type { Enemy, HitscanResult, SceneQuery, Vec2 } from '~/doom/types'
 import { fromAngle } from '~/doom/core/vec'
 
 /**
+ * A live enemy that combat/projectiles may strike: present, alive, and not already
+ * in its death sequence. Shared so hitscan and projectile collision agree on the
+ * "is this a valid target" rule (and don't duplicate the guard). Pure.
+ */
+export function isTargetable(enemy: Enemy | undefined): enemy is Enemy {
+  return enemy?.alive === true && enemy.state !== 'dead' && enemy.state !== 'dying'
+}
+
+/**
  * DDA traversal from `from` to `to`; returns false the moment a solid cell lies
  * on the segment before the target is reached. The endpoints' own cells are not
  * treated as blockers so an enemy standing in a doorway can still see out.
@@ -93,7 +102,7 @@ export function hitscan(
   let bestDist = wallDist
   for (let i = 0; i < enemies.length; i++) {
     const enemy = enemies[i]
-    if (enemy === undefined || !enemy.alive || enemy.state === 'dead' || enemy.state === 'dying') {
+    if (!isTargetable(enemy)) {
       continue
     }
     const relX = enemy.pos.x - origin.x
@@ -120,6 +129,27 @@ export function hitscan(
     point: { x: origin.x + dir.x * distance, y: origin.y + dir.y * distance },
     hitEnemy: bestIndex >= 0,
   }
+}
+
+/**
+ * Chebyshev splash falloff (Doom A_Explode / P_RadiusAttack). Distance is measured
+ * cell-wise as max(|dx|,|dy|) then converted to map units (×64); the target's own
+ * radius (in cells, ×64) is subtracted so big targets take full damage closer in.
+ * Result: 128 at the centre, fading linearly, 0 at or beyond 128 units. Pure.
+ */
+export function splashDamage(
+  centerCells: Vec2,
+  targetCells: Vec2,
+  targetRadiusCells: number,
+): number {
+  const dx = Math.abs(targetCells.x - centerCells.x)
+  const dy = Math.abs(targetCells.y - centerCells.y)
+  const distUnits = Math.max(dx, dy) * 64 - targetRadiusCells * 64
+  const dmg = 128 - distUnits
+  if (dmg <= 0) {
+    return 0
+  }
+  return dmg > 128 ? 128 : dmg
 }
 
 /** DDA march returning the distance to the first solid cell, clamped to `range`. */

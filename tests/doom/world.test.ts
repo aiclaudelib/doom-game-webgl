@@ -125,6 +125,27 @@ describe('World', () => {
     expect(events.reachedExit).toBe(false)
   })
 
+  it('a fired rocket spawns a projectile that kills a lined-up enemy via impact + splash', () => {
+    const world = makeWorld()
+    const player = world.player
+    // Arm the rocket launcher; the grunt (HP 20) sits straight ahead down the corridor.
+    player.weapons.rocket = true
+    player.currentWeapon = 'rocket'
+    player.ammo.rockets = 5
+
+    // Hold fire: tryFire spawns the rocket on a ready frame, it flies down the
+    // corridor, and on impact world applies direct (20..160) + Chebyshev splash.
+    let died = false
+    for (let i = 0; i < 240 && !died; i++) {
+      const events = world.update(input({ fire: true, firing: true }), 1 / 60)
+      if (events.enemyDied) {
+        died = true
+      }
+    }
+    expect(died).toBe(true)
+    expect(world.stats.kills).toBe(1)
+  })
+
   it('reports dryFired on an empty trigger pull and not on a real shot', () => {
     const world = makeWorld()
     // Drain the pistol's ammo so the next fresh press clicks empty.

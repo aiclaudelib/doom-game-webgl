@@ -21,18 +21,22 @@ import type {
   Pickup,
   Player,
   Projectile,
+  ProjectileImpact,
   Rng,
   SceneQuery,
   Settings,
   SpriteInstance,
   Texture,
+  Vec2,
   WeaponKind,
 } from '~/doom/types'
 import { approach } from '~/doom/core/math'
 import { dist } from '~/doom/core/vec'
+import { hitscan, lineOfSight, splashDamage } from '~/doom/game/combat'
 import { cellIndex, tileDef } from '~/doom/game/map'
 import {
   createPlayer,
+  damagePlayer,
   requestWeapon,
   setMessage,
   tickPlayerTimers,
@@ -42,8 +46,8 @@ import type { SpriteAtlas } from '~/doom/engine/sprites/spriteAtlas'
 import { spriteRotation } from '~/doom/engine/sprites/spriteAtlas'
 import { ACTOR_DEFS, resolveActorFrame } from '~/doom/game/actorDefs'
 import type { ActorPhase } from '~/doom/game/actorDefs'
-import { enemyDef, enemyFrame, spawnEnemy, updateEnemy } from '~/doom/game/enemy'
-import { projectileFrame, updateProjectile } from '~/doom/game/projectile'
+import { damageEnemy, enemyDef, enemyFrame, spawnEnemy, updateEnemy } from '~/doom/game/enemy'
+import { PROJECTILE_DEFS, projectileFrame, updateProjectile } from '~/doom/game/projectile'
 import { tryFire, updateWeapon, weaponBySlot, weaponDef } from '~/doom/game/weapon'
 import { applyPickup, spawnPickup } from '~/doom/game/pickup'
 
@@ -58,6 +62,14 @@ const PROJECTILE_Z_OFFSET = 0.4
 const FLYING_Z_OFFSET = 0.6
 /** Fallback billboard scale for any pickup. */
 const PICKUP_SCALE = 0.55
+
+/** Player collision radius (cells) used as the splash target radius for the player. */
+const PLAYER_SPLASH_RADIUS = 0.22
+/** BFG spray: 40 tracer rays across a 90° fan, 2.25°/ray, range 16 cells (1024u). */
+const BFG_RAYS = 40
+const BFG_FAN = Math.PI / 2
+const BFG_RAY_STEP = BFG_FAN / BFG_RAYS
+const BFG_RAY_RANGE = 16
 
 export interface WorldEvents {
   readonly fired: WeaponKind | null
@@ -235,9 +247,13 @@ export class World implements SceneQuery {
       }
     }
 
-    // 5. Projectiles — advance, then prune the dead.
+    // 5. Projectiles — advance + collide (cycle-safe; the descriptor comes back
+    //    here), then apply all damage / splash / BFG spray, then prune the dead.
     for (const proj of this.projectiles) {
-      updateProjectile(proj, player, this, dt)
+      const impact = updateProjectile(proj, this, player, this.enemies, dt)
+      if (impact.hit !== 'none') {
+        this.applyProjectileImpact(proj, impact)
+      }
     }
     pruneDead(this.projectiles)
 
@@ -270,6 +286,86 @@ export class World implements SceneQuery {
   }
 
   /**
+   * Apply a projectile's resolved outcome. Direct damage goes to the struck enemy
+   * or the player; splash kinds blast a radius around the impact point; BFG-spray
+   * kinds fan 40 hitscans from the FROZEN firing origin/angle. world owns this so
+   * the projectile module never imports enemy/player/combat (no import cycle).
+   */
+  private applyProjectileImpact(proj: Projectile, impact: ProjectileImpact): void {
+    const pdef = PROJECTILE_DEFS[proj.kind]
+
+    if (impact.hit === 'enemy') {
+      const enemy = this.enemies[impact.enemyIndex]
+      if (enemy !== undefined) {
+        damageEnemy(enemy, proj.damage, this.rng)
+      }
+    } else if (impact.hit === 'player') {
+      damagePlayer(this._player, proj.damage)
+    }
+
+    if (pdef.splashCells !== undefined) {
+      this.applySplash(impact.pos, this.rng)
+    }
+    if (pdef.bfgSpray === true) {
+      this.fireBfgSpray(proj)
+    }
+  }
+
+  /**
+   * Chebyshev radius blast (rocket / barrel): every live, non-immune enemy within
+   * the falloff and in line-of-sight takes splash; the player takes it too (splash
+   * hurts the shooter). Damage is the pure combat.splashDamage falloff.
+   */
+  private applySplash(center: Vec2, rng: Rng): void {
+    for (const enemy of this.enemies) {
+      if (!enemy.alive || enemy.state === 'dead' || enemy.state === 'dying') {
+        continue
+      }
+      const def = enemyDef(enemy.kind)
+      if (def.splashImmune === true) {
+        continue
+      }
+      const d = splashDamage(center, enemy.pos, def.radius)
+      if (d > 0 && lineOfSight(this, center, enemy.pos)) {
+        damageEnemy(enemy, d, rng)
+      }
+    }
+    const player = this._player
+    const pd = splashDamage(center, player.pos, PLAYER_SPLASH_RADIUS)
+    if (pd > 0 && lineOfSight(this, center, player.pos)) {
+      damagePlayer(player, pd)
+    }
+  }
+
+  /**
+   * BFG spray: on the ball's impact, fire BFG_RAYS hitscans across a 90° fan around
+   * the FROZEN firing angle (BFG_RAY_STEP per ray), from the FROZEN firing origin —
+   * turning after firing must not change the spray. Each ray that hits an enemy
+   * deals the sum of 15 dice rolls (1+floor(rng*8)) — 15..120 (realized ~49..87).
+   */
+  private fireBfgSpray(proj: Projectile): void {
+    const origin = proj.originPos ?? proj.pos
+    const baseAngle = proj.originAngle ?? Math.atan2(proj.vel.y, proj.vel.x)
+    const start = baseAngle - BFG_FAN / 2
+    for (let i = 0; i < BFG_RAYS; i++) {
+      const angle = start + i * BFG_RAY_STEP
+      const result = hitscan(this, this.enemies, origin, angle, BFG_RAY_RANGE)
+      if (!result.hitEnemy) {
+        continue
+      }
+      const enemy = this.enemies[result.enemyIndex]
+      if (enemy === undefined) {
+        continue
+      }
+      let dmg = 0
+      for (let r = 0; r < 15; r++) {
+        dmg += 1 + Math.floor(this.rng() * 8)
+      }
+      damageEnemy(enemy, dmg, this.rng)
+    }
+  }
+
+  /**
    * Map the weapon slot, run the switch/fire phase, then fire when intent + ready.
    * Automatic weapons (chaingun) repeat while the key is held; the rest need a
    * fresh press per shot. `dryFired` reports the empty-click case (trigger pulled
@@ -285,7 +381,7 @@ export class World implements SceneQuery {
     const player = this._player
 
     if (input.weaponSlot > 0) {
-      const kind = weaponBySlot(input.weaponSlot)
+      const kind = weaponBySlot(input.weaponSlot, player)
       if (kind !== null) {
         requestWeapon(player, kind)
       }
@@ -296,7 +392,7 @@ export class World implements SceneQuery {
     const def = weaponDef(player.currentWeapon)
     const wantsToFire = def.automatic ? input.firing : input.fire
     if (wantsToFire && player.weaponState === 'ready') {
-      const outcome = tryFire(player, this, this.enemies, this.rng)
+      const outcome = tryFire(player, this, this.enemies, this.projectiles, this.rng)
       if (outcome.fired) {
         return { fired: outcome.soundKind, dryFired: false }
       }
@@ -502,6 +598,12 @@ export class World implements SceneQuery {
       if (!proj.alive) {
         continue
       }
+      const atlasSprite = this.atlasProjectileSprite(proj)
+      if (atlasSprite !== null) {
+        sprites.push(atlasSprite)
+        continue
+      }
+      // Procedural fallback: bottom-centre billboard from the generated frames.
       sprites.push({
         texture: projectileFrame(proj, this.assets),
         pos: { x: proj.pos.x, y: proj.pos.y },
@@ -553,17 +655,49 @@ export class World implements SceneQuery {
       return null
     }
 
-    return {
-      texture: ref.tex,
-      pos: { x: enemy.pos.x, y: enemy.pos.y },
-      scale: 1,
-      flip: ref.flip,
-      ox: ref.ox,
-      oy: ref.oy,
-      pxW: ref.tex.width,
-      pxH: ref.tex.height,
-      ...(enemyDef(enemy.kind).flying === true ? { zOffset: FLYING_Z_OFFSET } : {}),
+    const flying = enemyDef(enemy.kind).flying === true
+    return offsetSprite(ref, enemy.pos, flying ? FLYING_Z_OFFSET : undefined)
+  }
+
+  /**
+   * Build the atlas billboard for a projectile (its 'A' frame, single rotation), or
+   * null when no atlas / actor / frame is available so the caller falls back to the
+   * procedural fireball frames. Keeps the flight-height zOffset either way.
+   */
+  private atlasProjectileSprite(proj: Projectile): SpriteInstance | null {
+    const atlas = this.spriteAtlas
+    if (atlas === null) {
+      return null
     }
+    const sprite = PROJECTILE_DEFS[proj.kind].sprite
+    if (!atlas.hasActor(sprite)) {
+      return null
+    }
+    const ref = atlas.actorFrame(sprite, 'A', 1)
+    if (ref === null) {
+      return null
+    }
+    return offsetSprite(ref, proj.pos, PROJECTILE_Z_OFFSET)
+  }
+}
+
+/** A Doom-offset billboard from an atlas frame ref at a world position (shared so
+ *  enemy + projectile atlas paths don't duplicate the SpriteInstance literal). */
+function offsetSprite(
+  ref: { tex: Texture; flip: boolean; ox: number; oy: number },
+  pos: Vec2,
+  zOffset: number | undefined,
+): SpriteInstance {
+  return {
+    texture: ref.tex,
+    pos: { x: pos.x, y: pos.y },
+    scale: 1,
+    flip: ref.flip,
+    ox: ref.ox,
+    oy: ref.oy,
+    pxW: ref.tex.width,
+    pxH: ref.tex.height,
+    ...(zOffset !== undefined ? { zOffset } : {}),
   }
 }
 

@@ -30,16 +30,26 @@ const HUD_TOP = RENDER_H - HUD_HEIGHT
 /** Display-only weapon→ammo mapping (the simulation owns the authoritative table). */
 const WEAPON_AMMO: Readonly<Record<WeaponKind, AmmoKind | null>> = {
   fist: null,
+  chainsaw: null,
   pistol: 'bullets',
   shotgun: 'shells',
+  superShotgun: 'shells',
   chaingun: 'bullets',
+  rocket: 'rockets',
+  plasma: 'cells',
+  bfg: 'cells',
 }
 
 const WEAPON_LABEL: Readonly<Record<WeaponKind, string>> = {
   fist: 'FIST',
+  chainsaw: 'CHAINSAW',
   pistol: 'PISTOL',
   shotgun: 'SHOTGUN',
+  superShotgun: 'SUPER SHOTGUN',
   chaingun: 'CHAINGUN',
+  rocket: 'ROCKET LAUNCHER',
+  plasma: 'PLASMA RIFLE',
+  bfg: 'BFG9000',
 }
 
 const KEY_ORDER: readonly KeyKind[] = ['red', 'blue', 'yellow']

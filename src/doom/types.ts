@@ -36,8 +36,17 @@ export type DepthBuffer = Float32Array
 // Kinds (string-literal unions — avoids enum-member naming rules, stays tree-shakeable)
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type WeaponKind = 'fist' | 'pistol' | 'shotgun' | 'chaingun'
-export type AmmoKind = 'bullets' | 'shells'
+export type WeaponKind =
+  | 'fist'
+  | 'chainsaw'
+  | 'pistol'
+  | 'shotgun'
+  | 'superShotgun'
+  | 'chaingun'
+  | 'rocket'
+  | 'plasma'
+  | 'bfg'
+export type AmmoKind = 'bullets' | 'shells' | 'rockets' | 'cells'
 export type EnemyKind =
   | 'grunt'
   | 'shotgunGuy'
@@ -53,7 +62,16 @@ export type EnemyKind =
   | 'arachnotron'
   | 'revenant'
 export type EnemyStateName = 'idle' | 'chase' | 'attack' | 'hurt' | 'dying' | 'dead'
-export type ProjectileKind = 'fireball'
+export type ProjectileKind =
+  | 'fireball'
+  | 'cacoball'
+  | 'baronball'
+  | 'fatshot'
+  | 'tracer'
+  | 'aplasma'
+  | 'rocket'
+  | 'plasma'
+  | 'bfg'
 export type KeyKind = 'red' | 'blue' | 'yellow'
 export type PickupKind =
   | 'health'
@@ -263,7 +281,7 @@ export interface InputFrame {
   readonly run: boolean // run/sprint key held
   readonly use: boolean // use/open-door edge
   readonly nav: NavEdge
-  readonly weaponSlot: number // 0 = none this frame, else 1..4
+  readonly weaponSlot: number // 0 = none this frame, else 1..7
   /** Pointer position in render-buffer coordinates, and click edge — for menu mousing. */
   readonly pointerX: number
   readonly pointerY: number
@@ -302,16 +320,30 @@ export interface Settings {
 // Entity definitions (static tuning tables) and live entity state
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** How tryFire delivers damage; drives the branch in game/weapon.ts. */
+export type WeaponFireMode = 'melee' | 'hitscan' | 'projectile'
+
 export interface WeaponDef {
   readonly kind: WeaponKind
   readonly ammo: AmmoKind | null // null = melee / costs nothing
-  readonly damage: number // per pellet
-  readonly pellets: number // 1 (pistol) .. 7 (shotgun)
+  /** Per pellet/shot dice: damage = (1 + floor(rng*damageSides)) * damageMul. */
+  readonly damageSides: number
+  readonly damageMul: number
+  readonly pellets: number // 1 (pistol) .. 20 (super shotgun)
   readonly spread: number // half-angle in radians applied per pellet
   readonly fireDelay: number // seconds between shots
-  readonly range: number // hitscan reach in tiles (short for fist)
-  readonly automatic: boolean // fires while held (chaingun)
-  readonly slot: number // 1..4 selection key
+  readonly range: number // hitscan reach in tiles (full-level for guns)
+  readonly automatic: boolean // fires while held (chaingun/plasma)
+  readonly slot: number // 1..7 selection key
+  readonly fireMode: WeaponFireMode
+  /** Ammo consumed per trigger pull (SSG 2, bfg 40, melee 0). */
+  readonly ammoPerShot: number
+  /** Projectile to spawn for fireMode 'projectile'. */
+  readonly projectileKind?: ProjectileKind
+  /** SSG only: extra random vertical spread modelled as a per-pellet hit-chance miss. */
+  readonly verticalSpread?: number
+  /** Fist berserk: multiply melee damage by 10 when the player is berserk. */
+  readonly berserkBoost?: boolean
 }
 
 /** How an enemy delivers damage; drives the AI dispatch in game/enemy.ts. */
@@ -346,6 +378,8 @@ export interface EnemyDef {
   /** Spectre — render flag (fuzz shader lands in a later phase; ok to ignore visually now). */
   readonly fuzz?: boolean
   readonly reactionTics?: number
+  /** Cyber/Spider bosses ignore radius/splash damage (honoured by world.applySplash). */
+  readonly splashImmune?: boolean
 }
 
 export interface Enemy {
@@ -374,6 +408,24 @@ export interface Projectile {
   fromEnemy: boolean
   alive: boolean
   animTimer: number
+  /** Homing (tracer): the enemy index it steers toward; the player when -1. */
+  homing?: boolean
+  /** Fixed 60Hz step counter so homing turns only on the canonical cadence. */
+  steps?: number
+  /** BFG: frozen firing origin + angle so the spray ignores live player turning. */
+  originPos?: Vec2
+  originAngle?: number
+}
+
+/** What a projectile hit this step — world.ts applies the actual damage. */
+export type ProjectileImpactKind = 'none' | 'wall' | 'enemy' | 'player' | 'expire'
+
+export interface ProjectileImpact {
+  readonly hit: ProjectileImpactKind
+  /** Index into the enemies array when hit === 'enemy', else -1. */
+  readonly enemyIndex: number
+  /** World-space impact point (for splash centring). */
+  readonly pos: Vec2
 }
 
 export interface Pickup {
@@ -395,6 +447,8 @@ export interface Player {
   keys: Record<KeyKind, boolean>
   currentWeapon: WeaponKind
   pendingWeapon: WeaponKind | null
+  /** Berserk pack active (fist ×10) — the powerup that sets it lands in Phase 5. */
+  berserk?: boolean
   weaponState: WeaponState
   weaponTimer: number // seconds left in the current weapon-state phase
   weaponFrame: number // index into the firing animation

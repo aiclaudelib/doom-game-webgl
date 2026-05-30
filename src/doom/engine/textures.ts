@@ -829,19 +829,28 @@ function taperBarrel(
   return { mx: Math.round(cx), my: topY }
 }
 
-type WeaponBuilder = (firing: boolean, recoil: number) => Texture
+type WeaponBuilder = (firing: boolean, recoil: number, spec: GunSpec) => Texture
 
-function makeWeapon(build: WeaponBuilder): WeaponVisual {
+/** Recolour/relabel knobs so one builder family serves several weapons (DRY). */
+interface GunSpec {
+  metal: Rgb // primary body / barrel metal
+  glove: Rgb // gripping hand + forearm
+  accent: Rgb // wood / secondary mass (shotgun receiver)
+  blade?: boolean // fist variant grows a chainsaw blade
+  twin?: boolean // shotgun variant widens to super-shotgun twin barrels
+}
+
+function makeWeapon(build: WeaponBuilder, spec: GunSpec): WeaponVisual {
   return {
-    idle: build(false, 0),
-    fire: [build(true, 4), build(true, 8), build(false, 3)],
+    idle: build(false, 0, spec),
+    fire: [build(true, 4, spec), build(true, 8, spec), build(false, 3, spec)],
   }
 }
 
-function fistTexture(firing: boolean, recoil: number): Texture {
+function fistTexture(firing: boolean, recoil: number, spec: GunSpec): Texture {
   const tex = createTexture(WEAPON_W, WEAPON_H)
   const cx = WEAPON_W / 2 + 10 // brawler stance: fist cocked to the right
-  const glove = pal('brown')
+  const glove = spec.glove
   // Punching thrust drives the whole arm UP-AND-AWAY (toward the far end) on fire.
   const punch = firing ? recoil * 3 : 0
   const wristY = WEAPON_H - 30 - punch
@@ -855,14 +864,24 @@ function fistTexture(firing: boolean, recoil: number): Texture {
   for (let i = 0; i < 4; i++) {
     disc(tex, cx - 14 + i * 9, fy - 13, 2, pal('steel'))
   }
+  // Chainsaw variant: a toothed blade rising from the fist toward the muzzle end.
+  if (spec.blade === true) {
+    const bx = cx - 4
+    rect(tex, bx, 6, 9, fy - 12, spec.metal)
+    hline(tex, bx, 6, 9, shade(spec.metal, 1.4))
+    for (let ty = 8; ty < fy - 12; ty += 4) {
+      rect(tex, bx + 9, ty, 3, 2, shade(spec.metal, 1.2)) // saw teeth
+    }
+    rect(tex, bx + 2, fy - 16, 5, 8, shade(spec.metal, 0.6)) // motor housing
+  }
   return tex
 }
 
-function pistolTexture(firing: boolean, recoil: number): Texture {
+function pistolTexture(firing: boolean, recoil: number, spec: GunSpec): Texture {
   const tex = createTexture(WEAPON_W, WEAPON_H)
   const cx = WEAPON_W / 2
-  const steel = pal('steel')
-  const glove = pal('darkGreen')
+  const steel = spec.metal
+  const glove = spec.glove
   const lift = recoil // whole model kicks down toward the player as one unit
   // Slide + receiver tapering up to a small, high muzzle (foreshortened).
   gunBody(tex, cx - 12, 32 + lift, 26, 18, steel) // wide rear receiver (near-ish)
@@ -881,16 +900,19 @@ function pistolTexture(firing: boolean, recoil: number): Texture {
   return tex
 }
 
-function shotgunTexture(firing: boolean, recoil: number): Texture {
+function shotgunTexture(firing: boolean, recoil: number, spec: GunSpec): Texture {
   const tex = createTexture(WEAPON_W, WEAPON_H)
   const cx = WEAPON_W / 2
-  const wood = pal('brown')
-  const steel = pal('darkSteel')
-  const glove = pal('darkBrown')
+  const wood = spec.accent
+  const steel = spec.metal
+  const glove = spec.glove
   const lift = Math.round(recoil * 1.5)
   // Twin barrels: wide+low near pair converging narrower toward the high muzzle.
-  const mL = taperBarrel(tex, cx - 9, 14 + lift, 42 + lift, 12, 7, steel)
-  const mR = taperBarrel(tex, cx + 9, 14 + lift, 42 + lift, 12, 7, steel)
+  // The super-shotgun (twin) splays them wider with fatter bores.
+  const sep = spec.twin === true ? 14 : 9
+  const bw = spec.twin === true ? 16 : 12
+  const mL = taperBarrel(tex, cx - sep, 14 + lift, 42 + lift, bw, 7, steel)
+  const mR = taperBarrel(tex, cx + sep, 14 + lift, 42 + lift, bw, 7, steel)
   disc(tex, mL.mx, mL.my, 3, pal('black')) // muzzle bores (small, far)
   disc(tex, mR.mx, mR.my, 3, pal('black'))
   // Wooden receiver bridging the barrels just above the hand.
@@ -908,11 +930,11 @@ function shotgunTexture(firing: boolean, recoil: number): Texture {
   return tex
 }
 
-function chaingunTexture(firing: boolean, recoil: number): Texture {
+function chaingunTexture(firing: boolean, recoil: number, spec: GunSpec): Texture {
   const tex = createTexture(WEAPON_W, WEAPON_H)
   const cx = WEAPON_W / 2
-  const steel = pal('steel')
-  const glove = pal('darkGreen')
+  const steel = spec.metal
+  const glove = spec.glove
   const lift = recoil // whole model kicks as a unit
   // Rotating barrel cluster: five tightly-packed tubes converging toward a tight high
   // muzzle ring. Central tubes read nearer/longer; outer ones recede (start higher).
@@ -946,13 +968,56 @@ function chaingunTexture(firing: boolean, recoil: number): Texture {
   return tex
 }
 
+/** Map each weapon to a builder + recolour spec — one table, no copied blocks. The
+ *  new arsenal (chainsaw/SSG/rocket/plasma/bfg) reuses the four base builders with
+ *  distinct palettes (chainsaw = fist+blade, SSG = wide twin shotgun, rocket/plasma/
+ *  bfg = chaingun-ish bodies in their signature colours). */
+const WEAPON_SPECS: Readonly<Record<WeaponKind, { build: WeaponBuilder; spec: GunSpec }>> = {
+  fist: {
+    build: fistTexture,
+    spec: { metal: pal('steel'), glove: pal('brown'), accent: pal('darkBrown') },
+  },
+  chainsaw: {
+    build: fistTexture,
+    spec: { metal: pal('steel'), glove: pal('darkGray'), accent: pal('yellow'), blade: true },
+  },
+  pistol: {
+    build: pistolTexture,
+    spec: { metal: pal('steel'), glove: pal('darkGreen'), accent: pal('darkSteel') },
+  },
+  shotgun: {
+    build: shotgunTexture,
+    spec: { metal: pal('darkSteel'), glove: pal('darkBrown'), accent: pal('brown') },
+  },
+  superShotgun: {
+    build: shotgunTexture,
+    spec: { metal: pal('steel'), glove: pal('darkBrown'), accent: pal('brown'), twin: true },
+  },
+  chaingun: {
+    build: chaingunTexture,
+    spec: { metal: pal('steel'), glove: pal('darkGreen'), accent: pal('darkSteel') },
+  },
+  rocket: {
+    build: chaingunTexture,
+    spec: { metal: pal('darkGreen'), glove: pal('darkBrown'), accent: pal('green') },
+  },
+  plasma: {
+    build: chaingunTexture,
+    spec: { metal: pal('cyan'), glove: pal('darkSteel'), accent: pal('blue') },
+  },
+  bfg: {
+    build: chaingunTexture,
+    spec: { metal: pal('green'), glove: pal('darkSteel'), accent: pal('blue') },
+  },
+}
+
 function buildWeapons(_rng: Rng): Readonly<Record<WeaponKind, WeaponVisual>> {
-  return {
-    fist: makeWeapon(fistTexture),
-    pistol: makeWeapon(pistolTexture),
-    shotgun: makeWeapon(shotgunTexture),
-    chaingun: makeWeapon(chaingunTexture),
+  const out = {} as Record<WeaponKind, WeaponVisual>
+  for (const kind of Object.keys(WEAPON_SPECS) as WeaponKind[]) {
+    const entry = WEAPON_SPECS[kind]
+    out[kind] = makeWeapon(entry.build, entry.spec)
   }
+  return out
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1073,12 +1138,13 @@ function buildPickups(_rng: Rng): Readonly<Record<PickupKind, Texture>> {
 
 const BALL = 20
 
-function fireballFrame(phase: number): Texture {
+/** A glowing radial ball: white core → mid → rim, wobbling by phase. The single
+ *  generator behind every projectile, recoloured per kind (mid/rim palette). */
+function ballFrame(phase: number, mid: Rgb, rim: Rgb): Texture {
   const tex = createTexture(BALL, BALL)
   const cx = BALL / 2
   const cy = BALL / 2
   const r = BALL / 2 - 1
-  // Radial glow: white core → yellow → orange → transparent, wobbling by phase.
   paint(tex, (px, py) => {
     const dx = px + 0.5 - cx
     const dy = py + 0.5 - cy
@@ -1086,16 +1152,41 @@ function fireballFrame(phase: number): Texture {
     const d = Math.sqrt(dx * dx + dy * dy) / (r * wob)
     if (d > 1) return null
     if (d < 0.35) return pal('white')
-    if (d < 0.65) return mix(pal('yellow'), pal('orange'), (d - 0.35) / 0.3)
-    return pal('orange')
+    if (d < 0.65) return mix(mid, rim, (d - 0.35) / 0.3)
+    return rim
   })
   return tex
 }
 
+/** Three spin frames for a projectile of the given mid/rim colours. */
+function ballFrames(mid: Rgb, rim: Rgb): readonly Texture[] {
+  return [
+    ballFrame(0, mid, rim),
+    ballFrame(Math.PI * 0.66, mid, rim),
+    ballFrame(Math.PI * 1.33, mid, rim),
+  ]
+}
+
+/** Per-kind glow palette (mid → rim). DRY — drives the total projectile Record. */
+const PROJECTILE_COLORS: Readonly<Record<ProjectileKind, readonly [Rgb, Rgb]>> = {
+  fireball: [pal('yellow'), pal('orange')],
+  cacoball: [pal('orange'), pal('red')],
+  baronball: [pal('green'), pal('darkGreen')],
+  fatshot: [pal('yellow'), pal('red')],
+  tracer: [pal('lightGray'), pal('cyan')],
+  aplasma: [pal('cyan'), pal('blue')],
+  rocket: [pal('lightGray'), pal('gray')],
+  plasma: [pal('cyan'), pal('blue')],
+  bfg: [pal('green'), pal('blue')],
+}
+
 function buildProjectiles(_rng: Rng): Readonly<Record<ProjectileKind, readonly Texture[]>> {
-  return {
-    fireball: [fireballFrame(0), fireballFrame(Math.PI * 0.66), fireballFrame(Math.PI * 1.33)],
+  const out = {} as Record<ProjectileKind, readonly Texture[]>
+  for (const kind of Object.keys(PROJECTILE_COLORS) as ProjectileKind[]) {
+    const colors = PROJECTILE_COLORS[kind]
+    out[kind] = ballFrames(colors[0], colors[1])
   }
+  return out
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
