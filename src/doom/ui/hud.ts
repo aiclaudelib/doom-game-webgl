@@ -110,6 +110,39 @@ export function renderHud(fb: Framebuffer, player: Player, stats: WorldStats): v
   if (player.messageTimer > 0 && player.message.length > 0) {
     drawTextCentered(fb, player.message, RENDER_W / 2, HUD_TOP - 12, pal('white'))
   }
+
+  renderPowerups(fb, player)
+}
+
+/** Active timed powerups: short label + remaining seconds, in the top-left corner. */
+interface PowerupReadout {
+  readonly label: string
+  readonly timer: number
+  readonly color: Rgb
+}
+
+function powerupReadouts(player: Player): readonly PowerupReadout[] {
+  return [
+    { label: 'INVL', timer: player.invulnTimer, color: pal('white') },
+    { label: 'SUIT', timer: player.radSuitTimer, color: pal('green') },
+    { label: 'LITE', timer: player.lightAmpTimer, color: pal('yellow') },
+    { label: 'BLUR', timer: player.blurTimer, color: pal('cyan') },
+  ]
+}
+
+function renderPowerups(fb: Framebuffer, player: Player): void {
+  let y = 4
+  for (const p of powerupReadouts(player)) {
+    if (p.timer <= 0) {
+      continue
+    }
+    drawText(fb, `${p.label} ${Math.ceil(p.timer)}`, 4, y, p.color)
+    y += 9
+  }
+  // Berserk persists for the level — a steady pip rather than a countdown.
+  if (player.berserk === true) {
+    drawText(fb, 'BERSERK', 4, y, pal('red'))
+  }
 }
 
 /** Pick the right weapon texture for the player's animation phase. */
@@ -141,7 +174,8 @@ export function renderWeaponSprite(fb: Framebuffer, player: Player, assets: Asse
   blitTexture(fb, tex, dx, dy, scale)
 }
 
-/** Full-viewport translucent tints: red on damage, gold on pickup, scaled by player flashes. */
+/** Full-viewport translucent tints: red on damage, gold on pickup, scaled by player flashes.
+ *  Invulnerability adds a steady pale tint (a stand-in for Doom's inverse palette) while active. */
 export function renderFlash(fb: Framebuffer, player: Player): void {
   if (player.damageFlash > 0) {
     const a = Math.round(Math.min(1, player.damageFlash) * 140)
@@ -153,6 +187,13 @@ export function renderFlash(fb: Framebuffer, player: Player): void {
     const a = Math.round(Math.min(1, player.pickupFlash) * 90)
     if (a > 0) {
       fillRect(fb, 0, 0, VIEW_W, VIEW_H, pal('yellow'), a)
+    }
+  }
+  if (player.invulnTimer > 0) {
+    // Blink toward the end (under ~3 s remaining) like Doom's expiring invuln.
+    const blink = player.invulnTimer < 3 && Math.floor(player.invulnTimer * 6) % 2 === 0
+    if (!blink) {
+      fillRect(fb, 0, 0, VIEW_W, VIEW_H, pal('white'), 50)
     }
   }
 }

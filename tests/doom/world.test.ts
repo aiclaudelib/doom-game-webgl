@@ -146,6 +146,91 @@ describe('World', () => {
     expect(world.stats.kills).toBe(1)
   })
 
+  it('applies a powerup the player walks onto (blur timer starts)', () => {
+    // A blur sphere 'w' sits one tile east of the start down a clear corridor.
+    const source: LevelSource = {
+      name: 'Powerup Test',
+      rows: ['##########', '#@w......X#', '##########'],
+      floorFlat: 0,
+      ceilingFlat: 2,
+      playerAngle: 0,
+    }
+    const powerWorld = new World(
+      compileLevel(source),
+      createAssets(1),
+      mulberry32(1),
+      defaultSettings(),
+    )
+    expect(powerWorld.player.blurTimer).toBe(0)
+
+    let grabbed = false
+    for (let i = 0; i < 120 && !grabbed; i++) {
+      const events = powerWorld.update(input({ moveForward: 1 }), 1 / 60)
+      if (events.pickedUp) {
+        grabbed = true
+      }
+    }
+    expect(grabbed).toBe(true)
+    expect(powerWorld.player.blurTimer).toBeGreaterThan(0)
+  })
+
+  it('shooting a barrel explodes it, chain-detonates an adjacent barrel, and hurts the player', () => {
+    // Player '@' faces east; two barrels 'Q' sit down the corridor (cols 3 and 5).
+    // The nearest is shot, detonates, and its 2-cell Chebyshev splash both chains the
+    // far barrel AND reaches back to the (close) player — proving splash hurts the shooter.
+    const source: LevelSource = {
+      name: 'Barrel Test',
+      rows: ['##########', '#@.Q.Q..X#', '##########'],
+      floorFlat: 0,
+      ceilingFlat: 2,
+      playerAngle: 0,
+    }
+    const world = new World(compileLevel(source), createAssets(1), mulberry32(1), defaultSettings())
+    // Two barrels spawned; neither counts toward the kill total (decor, not monsters).
+    expect(world.enemyStates.filter(e => e.kind === 'barrel')).toHaveLength(2)
+    expect(world.stats.totalEnemies).toBe(0)
+
+    const healthBefore = world.player.health
+    // Hold fire: the pistol hitscans the nearest barrel; it dies → detonates → chains.
+    for (let i = 0; i < 240; i++) {
+      world.update(input({ fire: true, firing: true }), 1 / 60)
+      const barrels = world.enemyStates.filter(e => e.kind === 'barrel')
+      const allBlown = barrels.every(b => b.state === 'dying' || b.state === 'dead')
+      if (allBlown) {
+        break
+      }
+    }
+
+    const barrels = world.enemyStates.filter(e => e.kind === 'barrel')
+    // BOTH barrels detonated — the shot one and the chained one.
+    expect(barrels.every(b => b.state === 'dying' || b.state === 'dead')).toBe(true)
+    // The explosion's splash hurt the player (splash hurts the shooter).
+    expect(world.player.health).toBeLessThan(healthBefore)
+    // Barrels never count as kills.
+    expect(world.stats.kills).toBe(0)
+  })
+
+  it('ticks a decor prop and advances its animation clock', () => {
+    // A techlamp 'T' (animated, fullbright) sits beside the player; no monsters.
+    const source: LevelSource = {
+      name: 'Prop Test',
+      rows: ['##########', '#@T.....X#', '##########'],
+      floorFlat: 0,
+      ceilingFlat: 2,
+      playerAngle: 0,
+    }
+    const world = new World(compileLevel(source), createAssets(1), mulberry32(1), defaultSettings())
+    expect(world.propStates).toHaveLength(1)
+    expect(world.propStates[0]?.kind).toBe('techLamp')
+    expect(world.propStates[0]?.animTimer).toBe(0)
+
+    for (let i = 0; i < 30; i++) {
+      world.update(input({}), 1 / 60)
+    }
+    // The prop's animation clock advanced (animated props loop on this clock).
+    expect(world.propStates[0]?.animTimer).toBeGreaterThan(0)
+  })
+
   it('reports dryFired on an empty trigger pull and not on a real shot', () => {
     const world = makeWorld()
     // Drain the pistol's ammo so the next fresh press clicks empty.

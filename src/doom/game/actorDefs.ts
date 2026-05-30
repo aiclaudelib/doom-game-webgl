@@ -209,6 +209,16 @@ export const ACTOR_DEFS: Readonly<Record<EnemyKind, ActorDef>> = {
       death: seq('M7 N7 O7 P7 Q-1'),
     },
   },
+  // Explosive barrel — idle BAR1 A/B @6t. The death blast uses the separate BEXP
+  // lump, so world.ts special-cases the barrel's billboard entirely; this entry only
+  // keeps the Record<EnemyKind, ActorDef> total satisfied with a sane idle fallback.
+  barrel: {
+    sprite: 'BAR1',
+    states: {
+      see: seq('A6 B6', true),
+      death: seq('A6 B6 A-1'),
+    },
+  },
 }
 
 /** Pick the sequence for a phase, falling back to `see` when the phase is undefined. */

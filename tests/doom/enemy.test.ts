@@ -80,6 +80,19 @@ describe('damageEnemy', () => {
     expect(enemy.health).toBe(0)
     expect(enemy.state).toBe('dying')
   })
+
+  it('a barrel takes damage and explodes (dying) without ever flinching', () => {
+    const barrel = spawnEnemy('barrel', 2.5, 2.5)
+    expect(ENEMY_DEFS.barrel.maxHealth).toBe(20)
+    expect(ENEMY_DEFS.barrel.archetype).toBe('inert')
+    // A non-lethal hit: painChance 0 ⇒ a barrel never enters the hurt/flinch state.
+    damageEnemy(barrel, 10, MID)
+    expect(barrel.state).toBe('idle')
+    expect(barrel.health).toBe(10)
+    // The next hit drops it to 0 ⇒ dying (the BEXP fuse the world detonates on).
+    damageEnemy(barrel, 10, MID)
+    expect(barrel.state).toBe('dying')
+  })
 })
 
 describe('updateEnemy', () => {
@@ -180,5 +193,21 @@ describe('updateEnemy', () => {
     damageEnemy(enemy, 10, MID)
     expect(enemy.charging).toBe(false)
     expect(enemy.state).toBe('hurt')
+  })
+
+  it('inert: a barrel never chases, moves or attacks even with the player in view', () => {
+    const scene = openScene()
+    const player = createPlayer(vec(2.5, 2.5), 0)
+    const before = player.health
+    const barrel = spawnEnemy('barrel', 6.5, 2.5) // well within sight + range of others
+    const startPos = { x: barrel.pos.x, y: barrel.pos.y }
+
+    for (let i = 0; i < 30; i++) {
+      updateEnemy(barrel, player, scene, [], NO_PAIN, 1 / 60)
+    }
+
+    expect(barrel.pos).toEqual(startPos) // stationary
+    expect(barrel.state).toBe('idle') // never chases/attacks
+    expect(player.health).toBe(before) // deals no damage on its own
   })
 })

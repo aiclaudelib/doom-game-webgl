@@ -638,6 +638,16 @@ const ENEMY_PALETTES: Readonly<Record<EnemyKind, EnemyPalette>> = {
     horns: false,
     bulky: false,
   },
+  // Explosive barrel — a green-grey metal drum with red warning trim (eye colour).
+  // Reuses the humanoid generator so headless still renders a barrel-ish billboard.
+  barrel: {
+    body: shade(pal('darkGreen'), 0.9),
+    bodyDark: shade(pal('darkSteel'), 0.8),
+    limb: pal('red'),
+    eye: pal('orange'),
+    horns: false,
+    bulky: true,
+  },
 }
 
 function buildEnemy(ep: EnemyPalette, rng: Rng): EnemyVisual {
@@ -1106,9 +1116,20 @@ function gunPickupIcon(body: Rgb, barrels: number): Texture {
   return tex
 }
 
-/** Keycard icon used by all three coloured keys. */
-function keycardIcon(color: Rgb): Texture {
+/** Keycard / skull-key icon used by all three coloured keys. `skull` swaps the
+ *  card body for a small bony skull so card vs skull keys read apart. */
+function keycardIcon(color: Rgb, skull = false): Texture {
   const tex = newIcon()
+  if (skull) {
+    const cx = ICON / 2
+    disc(tex, cx, 10, 6, color) // cranium
+    rect(tex, cx - 4, 13, 8, 6, shade(color, 0.9)) // jaw block
+    disc(tex, cx - 2.5, 9, 1.4, pal('black')) // eye sockets
+    disc(tex, cx + 2.5, 9, 1.4, pal('black'))
+    rect(tex, cx - 1, 11, 2, 3, pal('black')) // nasal cavity
+    for (let i = 0; i < 3; i++) vline(tex, cx - 3 + i * 3, 16, 3, pal('black')) // teeth gaps
+    return tex
+  }
   rect(tex, 6, 4, 12, ICON - 8, color)
   outline(tex, 6, 4, 12, ICON - 8, shade(color, 0.6))
   // Notch + magnetic stripe so it reads as a keycard.
@@ -1117,19 +1138,95 @@ function keycardIcon(color: Rgb): Texture {
   return tex
 }
 
+/** Glowing power sphere (soul/mega/invuln/blur/light): radial core→rim with a sheen. */
+function sphereIcon(mid: Rgb, rim: Rgb): Texture {
+  const tex = newIcon()
+  const cx = ICON / 2
+  const cy = ICON / 2
+  const r = ICON / 2 - 2
+  paint(tex, (px, py) => {
+    const dx = px + 0.5 - cx
+    const dy = py + 0.5 - cy
+    const d = Math.sqrt(dx * dx + dy * dy) / r
+    if (d > 1) return null
+    if (d < 0.32) return pal('white')
+    if (d < 0.68) return mix(mid, rim, (d - 0.32) / 0.36)
+    return rim
+  })
+  disc(tex, cx - r * 0.32, cy - r * 0.32, 2, mix(pal('white'), mid, 0.4)) // sheen
+  return tex
+}
+
+/** A backpack icon: a satchel body with two pouch flaps. */
+function backpackIcon(): Texture {
+  const tex = newIcon()
+  const c = pal('brown')
+  rect(tex, 4, 8, ICON - 8, ICON - 11, c)
+  outline(tex, 4, 8, ICON - 8, ICON - 11, shade(c, 0.55))
+  rect(tex, 7, 4, ICON - 14, 5, shade(c, 1.15)) // top handle block
+  rect(tex, 6, 12, 5, 6, shade(c, 0.8)) // left pouch
+  rect(tex, ICON - 11, 12, 5, 6, shade(c, 0.8)) // right pouch
+  return tex
+}
+
+/**
+ * One per-kind icon spec: pick a generator. Builders stay DRY — the few icon
+ * primitives above are recoloured per kind through this single table.
+ */
+type IconBuilder = () => Texture
+
+const PICKUP_ICONS: Readonly<Record<PickupKind, IconBuilder>> = {
+  // Health (potions / box / spheres).
+  health: () => potionIcon(pal('red')),
+  medkit: () => boxIcon(pal('white'), true),
+  healthBonus: () => potionIcon(pal('blue')),
+  soulsphere: () => sphereIcon(pal('blue'), pal('cyan')),
+  megasphere: () => sphereIcon(pal('orange'), pal('yellow')),
+  // Armor (vests / bonus / set).
+  armor: () => vestIcon(),
+  greenArmor: () => vestIcon(),
+  blueArmor: () => potionIcon(pal('blue')),
+  armorBonus: () => potionIcon(pal('green')),
+  // Powerups (spheres / recoloured shapes).
+  berserk: () => potionIcon(pal('darkRed')),
+  invuln: () => sphereIcon(pal('lightGray'), pal('darkGray')),
+  radsuit: () => vestIcon(),
+  lightAmp: () => sphereIcon(pal('green'), pal('darkGreen')),
+  allMap: () => boxIcon(pal('steel'), false),
+  blur: () => sphereIcon(pal('darkSteel'), pal('steel')),
+  backpack: () => backpackIcon(),
+  // Ammo (clips / boxes / shells).
+  bullets: () => clipIcon(),
+  bulletBox: () => boxIcon(pal('yellow'), false),
+  shells: () => shellsIcon(),
+  shellBox: () => boxIcon(pal('red'), false),
+  rockets: () => clipIcon(),
+  rocketBox: () => boxIcon(pal('darkGreen'), false),
+  cells: () => boxIcon(pal('cyan'), false),
+  cellPack: () => boxIcon(pal('blue'), false),
+  // Weapons (mini gun silhouettes / saw).
+  shotgun: () => gunPickupIcon(pal('brown'), 2),
+  chaingun: () => gunPickupIcon(pal('steel'), 3),
+  superShotgun: () => gunPickupIcon(pal('darkBrown'), 2),
+  rocketLauncher: () => gunPickupIcon(pal('darkGreen'), 1),
+  plasmaGun: () => gunPickupIcon(pal('cyan'), 1),
+  bfg: () => gunPickupIcon(pal('green'), 2),
+  chainsaw: () => gunPickupIcon(pal('darkGray'), 1),
+  // Keys (cards + skulls).
+  keyRed: () => keycardIcon(pal('red')),
+  keyBlue: () => keycardIcon(pal('blue')),
+  keyYellow: () => keycardIcon(pal('yellow')),
+  keySkullRed: () => keycardIcon(pal('red'), true),
+  keySkullBlue: () => keycardIcon(pal('blue'), true),
+  keySkullYellow: () => keycardIcon(pal('yellow'), true),
+}
+
 function buildPickups(_rng: Rng): Readonly<Record<PickupKind, Texture>> {
-  return {
-    health: potionIcon(pal('red')),
-    medkit: boxIcon(pal('white'), true),
-    armor: vestIcon(),
-    bullets: clipIcon(),
-    shells: shellsIcon(),
-    shotgun: gunPickupIcon(pal('brown'), 2),
-    chaingun: gunPickupIcon(pal('steel'), 3),
-    keyRed: keycardIcon(pal('red')),
-    keyBlue: keycardIcon(pal('blue')),
-    keyYellow: keycardIcon(pal('yellow')),
+  const out = {} as Record<PickupKind, Texture>
+  for (const kind of Object.keys(PICKUP_ICONS) as PickupKind[]) {
+    out[kind] = PICKUP_ICONS[kind]()
   }
+  return out
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

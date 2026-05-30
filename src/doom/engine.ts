@@ -507,7 +507,8 @@ export class DoomEngine {
     const world = this.world
 
     if ((this.mode === 'playing' || this.mode === 'paused') && world !== null) {
-      renderWorld(this.fb, world, world.camera, this.assets, this.depth)
+      const fullBright = world.player.lightAmpTimer > 0
+      renderWorld(this.fb, world, world.camera, this.assets, this.depth, fullBright)
       renderSprites(this.fb, world.buildSprites(), world.camera, this.depth)
       renderWeaponSprite(this.fb, world.player, this.assets)
       renderHud(this.fb, world.player, world.stats)
@@ -517,7 +518,14 @@ export class DoomEngine {
       }
     } else if ((this.mode === 'dead' || this.mode === 'levelComplete') && world !== null) {
       // These overlay the last world frame; redraw it underneath.
-      renderWorld(this.fb, world, world.camera, this.assets, this.depth)
+      renderWorld(
+        this.fb,
+        world,
+        world.camera,
+        this.assets,
+        this.depth,
+        world.player.lightAmpTimer > 0,
+      )
       renderSprites(this.fb, world.buildSprites(), world.camera, this.depth)
       renderHud(this.fb, world.player, world.stats)
       renderMenu(this.fb, this.mode, this.menuState, this.settings, world.stats)

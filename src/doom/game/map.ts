@@ -8,6 +8,8 @@ import type {
   LevelSource,
   PickupKind,
   PickupSpawn,
+  PropKind,
+  PropSpawn,
   TileDef,
   Vec2,
 } from '~/doom/types'
@@ -64,10 +66,12 @@ const CHAR_TO_TILE: Readonly<Record<string, number>> = {
   Y: 9,
 }
 
-// Spawn chars for the full base roster. Chosen to avoid clashing with tile chars
-// (# = % D X * R B Y), the player (@) or pickup chars (h a m b s G C r u y):
+// Spawn chars for the full base roster + the explosive barrel. Chosen to avoid
+// clashing with tile chars (# = % D X * R B Y), the player (@), pickup chars
+// (h a m b s G C r u y …) or prop chars (below):
 //   g grunt, S shotgunGuy, c chaingunner, i imp, d demon, p spectre, l lostSoul,
-//   k cacodemon, K hellKnight, n baron, f mancubus, A arachnotron, v revenant.
+//   k cacodemon, K hellKnight, n baron, f mancubus, A arachnotron, v revenant,
+//   Q explosive barrel (a shootable, exploding decor entity modelled as an enemy).
 const CHAR_TO_ENEMY: Readonly<Record<string, EnemyKind>> = {
   g: 'grunt',
   S: 'shotgunGuy',
@@ -82,8 +86,17 @@ const CHAR_TO_ENEMY: Readonly<Record<string, EnemyKind>> = {
   f: 'mancubus',
   A: 'arachnotron',
   v: 'revenant',
+  Q: 'barrel',
 }
 
+// Pickup chars. Existing: h health, a armor(green), m medkit, b bullets, s shells,
+// G shotgun, C chaingun, r/u/y key cards. New chars chosen to avoid clashing with
+// tiles (# = % D X * R B Y), spawns (@ g S c i d p l k K n f A v) and the above:
+//   H healthBonus, N armorBonus, e greenArmor, q blueArmor, O soulsphere, M megasphere,
+//   z berserk, V invuln, U radsuit, L lightAmp, P allMap, w blur, $ backpack,
+//   o rockets, 0 rocketBox, j cells, 9 cellPack, 8 bulletBox, 7 shellBox,
+//   2 superShotgun, 5 rocketLauncher, 6 plasmaGun, 4 bfg, W chainsaw,
+//   ! red skull, ? blue skull, ; yellow skull.
 const CHAR_TO_PICKUP: Readonly<Record<string, PickupKind>> = {
   h: 'health',
   a: 'armor',
@@ -95,6 +108,79 @@ const CHAR_TO_PICKUP: Readonly<Record<string, PickupKind>> = {
   r: 'keyRed',
   u: 'keyBlue',
   y: 'keyYellow',
+  H: 'healthBonus',
+  N: 'armorBonus',
+  e: 'greenArmor',
+  q: 'blueArmor',
+  O: 'soulsphere',
+  M: 'megasphere',
+  z: 'berserk',
+  V: 'invuln',
+  U: 'radsuit',
+  L: 'lightAmp',
+  P: 'allMap',
+  w: 'blur',
+  $: 'backpack',
+  o: 'rockets',
+  '0': 'rocketBox',
+  j: 'cells',
+  '9': 'cellPack',
+  '8': 'bulletBox',
+  '7': 'shellBox',
+  '2': 'superShotgun',
+  '5': 'rocketLauncher',
+  '6': 'plasmaGun',
+  '4': 'bfg',
+  W: 'chainsaw',
+  '!': 'keySkullRed',
+  '?': 'keySkullBlue',
+  ';': 'keySkullYellow',
+}
+
+// Decoration-prop chars (doomBehaviorSpec.md §3.5). Render-only billboards. Chosen to
+// avoid clashing with tile chars (# = % D X * R B Y), the player (@), enemy chars
+// (g S c i d p l k K n f A v Q) and pickup chars. Documented one-per-line:
+//   T techLamp, t shortTechLamp, F floorLamp, E candelabra,
+//   ^ redTorch, ~ greenTorch, : blueTorch, ` shortRedTorch, ' shortGreenTorch,
+//   " shortBlueTorch, , candle,
+//   I greenPillar, J shortGreenPillar, ( redPillar, ) shortRedPillar,
+//   3 heartPillar, Z skullPillar,
+//   x torchTree, T... 1 bigTree,
+//   < hangingVictim, > hangingArmsOut, [ hangingLeg, ] hangingTorso,
+//   - deadMarine, _ gibbedMarine, + deadZombie, / deadShotgunGuy,
+//   | deadImp, & deadDemon, { deadCacodemon, } poolOfBlood.
+const CHAR_TO_PROP: Readonly<Record<string, PropKind>> = {
+  T: 'techLamp',
+  t: 'shortTechLamp',
+  F: 'floorLamp',
+  E: 'candelabra',
+  '^': 'redTorch',
+  '~': 'greenTorch',
+  ':': 'blueTorch',
+  '`': 'shortRedTorch',
+  "'": 'shortGreenTorch',
+  '"': 'shortBlueTorch',
+  ',': 'candle',
+  I: 'greenPillar',
+  J: 'shortGreenPillar',
+  '(': 'redPillar',
+  ')': 'shortRedPillar',
+  '3': 'heartPillar',
+  Z: 'skullPillar',
+  x: 'torchTree',
+  '1': 'bigTree',
+  '<': 'hangingVictim',
+  '>': 'hangingArmsOut',
+  '[': 'hangingLeg',
+  ']': 'hangingTorso',
+  '-': 'deadMarine',
+  _: 'gibbedMarine',
+  '+': 'deadZombie',
+  '/': 'deadShotgunGuy',
+  '|': 'deadImp',
+  '&': 'deadDemon',
+  '{': 'deadCacodemon',
+  '}': 'poolOfBlood',
 }
 
 /** Flat row-major index for a cell. */
@@ -111,6 +197,7 @@ export function compileLevel(src: LevelSource): Level {
   let playerStart: Vec2 = vec(width / 2, height / 2)
   const enemySpawns: EnemySpawn[] = []
   const pickupSpawns: PickupSpawn[] = []
+  const propSpawns: PropSpawn[] = []
 
   for (let ty = 0; ty < height; ty++) {
     const row = src.rows[ty] ?? ''
@@ -141,6 +228,12 @@ export function compileLevel(src: LevelSource): Level {
       const pickupKind = CHAR_TO_PICKUP[ch]
       if (pickupKind !== undefined) {
         pickupSpawns.push({ kind: pickupKind, x: cx, y: cy })
+        continue
+      }
+
+      const propKind = CHAR_TO_PROP[ch]
+      if (propKind !== undefined) {
+        propSpawns.push({ kind: propKind, x: cx, y: cy })
       }
       // ' ' / '.' / unknown → floor id 0 (already zeroed).
     }
@@ -157,6 +250,7 @@ export function compileLevel(src: LevelSource): Level {
     playerAngle: src.playerAngle,
     enemySpawns,
     pickupSpawns,
+    propSpawns,
   }
 }
 

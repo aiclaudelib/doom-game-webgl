@@ -61,6 +61,9 @@ export type EnemyKind =
   | 'mancubus'
   | 'arachnotron'
   | 'revenant'
+  // Explosive barrel — a stationary, shootable, exploding decor entity modelled as
+  // an enemy so the hitscan / projectile / splash damage paths hit it for free.
+  | 'barrel'
 export type EnemyStateName = 'idle' | 'chase' | 'attack' | 'hurt' | 'dying' | 'dead'
 export type ProjectileKind =
   | 'fireball'
@@ -73,7 +76,55 @@ export type ProjectileKind =
   | 'plasma'
   | 'bfg'
 export type KeyKind = 'red' | 'blue' | 'yellow'
+/**
+ * Render-only decoration props (doomBehaviorSpec.md §3.5). Non-colliding billboards
+ * (a conscious simplification); the per-kind sprite/anim/ceiling data lives in
+ * game/prop.ts PROP_DEFS. Kept here so the Level contract can carry prop spawns.
+ */
+export type PropKind =
+  // Lamps / torches / candles (fullbright).
+  | 'techLamp'
+  | 'shortTechLamp'
+  | 'floorLamp'
+  | 'candelabra'
+  | 'redTorch'
+  | 'greenTorch'
+  | 'blueTorch'
+  | 'shortRedTorch'
+  | 'shortGreenTorch'
+  | 'shortBlueTorch'
+  | 'candle'
+  // Pillars / columns (sector-lit).
+  | 'greenPillar'
+  | 'shortGreenPillar'
+  | 'redPillar'
+  | 'shortRedPillar'
+  | 'heartPillar'
+  | 'skullPillar'
+  // Trees.
+  | 'torchTree'
+  | 'bigTree'
+  // Hanging victims (ceiling-anchored).
+  | 'hangingVictim'
+  | 'hangingArmsOut'
+  | 'hangingLeg'
+  | 'hangingTorso'
+  // Floor corpses / gore (pass-through).
+  | 'deadMarine'
+  | 'gibbedMarine'
+  | 'deadZombie'
+  | 'deadShotgunGuy'
+  | 'deadImp'
+  | 'deadDemon'
+  | 'deadCacodemon'
+  | 'poolOfBlood'
+/** Which powerup a startPowerup() call activates (the timed ones; berserk/allMap are flags). */
+export type PowerupKind = 'invuln' | 'radsuit' | 'lightAmp' | 'blur'
+/** Armor tiers: green absorbs 1/3, blue absorbs 1/2 (doomBehaviorSpec.md §3.4). */
+export type ArmorType = 'none' | 'green' | 'blue'
 export type PickupKind =
+  // Existing (reinterpreted canonically: health=Stimpack +10/cap100,
+  // medkit=Medikit +25/cap100, armor=Green armor set100/cap100).
   | 'health'
   | 'medkit'
   | 'armor'
@@ -84,6 +135,38 @@ export type PickupKind =
   | 'keyRed'
   | 'keyBlue'
   | 'keyYellow'
+  // Health / armor (BON1/BON2/ARM1/ARM2/SOUL/MEGA).
+  | 'healthBonus'
+  | 'armorBonus'
+  | 'greenArmor'
+  | 'blueArmor'
+  | 'soulsphere'
+  | 'megasphere'
+  // Powerups (PSTR/PINV/SUIT/PVIS/PMAP/PINS).
+  | 'berserk'
+  | 'invuln'
+  | 'radsuit'
+  | 'lightAmp'
+  | 'allMap'
+  | 'blur'
+  // Ammo (BPAK/ROCK/BROK/CELL/CELP/AMMO/SBOX).
+  | 'backpack'
+  | 'rockets'
+  | 'rocketBox'
+  | 'cells'
+  | 'cellPack'
+  | 'bulletBox'
+  | 'shellBox'
+  // Weapons (SHT2/LAUN/PLAS/BFUG/CSAW).
+  | 'superShotgun'
+  | 'rocketLauncher'
+  | 'plasmaGun'
+  | 'bfg'
+  | 'chainsaw'
+  // Skull keys (RSKU/BSKU/YSKU — same lock as the matching card).
+  | 'keySkullRed'
+  | 'keySkullBlue'
+  | 'keySkullYellow'
 
 /** Top-level screen the engine is currently presenting. */
 export type GameMode =
@@ -153,6 +236,12 @@ export interface PickupSpawn {
   readonly y: number
 }
 
+export interface PropSpawn {
+  readonly kind: PropKind
+  readonly x: number
+  readonly y: number
+}
+
 /** Authoring form: an ASCII grid + metadata, compiled into a Level by game/map.ts. */
 export interface LevelSource {
   readonly name: string
@@ -175,6 +264,7 @@ export interface Level {
   readonly playerAngle: number
   readonly enemySpawns: readonly EnemySpawn[]
   readonly pickupSpawns: readonly PickupSpawn[]
+  readonly propSpawns: readonly PropSpawn[]
 }
 
 /**
@@ -346,8 +436,12 @@ export interface WeaponDef {
   readonly berserkBoost?: boolean
 }
 
-/** How an enemy delivers damage; drives the AI dispatch in game/enemy.ts. */
-export type EnemyArchetype = 'melee' | 'hitscan' | 'projectile' | 'charger'
+/**
+ * How an enemy delivers damage; drives the AI dispatch in game/enemy.ts.
+ * `inert` actors (the explosive barrel) never chase or attack — they only process
+ * their hurt/dying/dead timers and animation.
+ */
+export type EnemyArchetype = 'melee' | 'hitscan' | 'projectile' | 'charger' | 'inert'
 
 export interface EnemyDef {
   readonly kind: EnemyKind
@@ -434,6 +528,14 @@ export interface Pickup {
   active: boolean
 }
 
+/** A live decoration prop: a render-only billboard whose anim clock advances each tick. */
+export interface Prop {
+  kind: PropKind
+  pos: Vec2
+  /** Free-running animation clock (seconds), advanced by updateProp. */
+  animTimer: number
+}
+
 export type WeaponState = 'ready' | 'firing' | 'switching'
 
 export interface Player {
@@ -441,14 +543,25 @@ export interface Player {
   angle: number
   health: number
   armor: number
+  /** Armor tier driving damage absorption: green 1/3, blue 1/2, none 0 (§3.4). */
+  armorType: ArmorType
   ammo: Record<AmmoKind, number>
   maxAmmo: Record<AmmoKind, number>
   weapons: Record<WeaponKind, boolean>
   keys: Record<KeyKind, boolean>
   currentWeapon: WeaponKind
   pendingWeapon: WeaponKind | null
-  /** Berserk pack active (fist ×10) — the powerup that sets it lands in Phase 5. */
+  /** Berserk pack active (fist ×10), level-long once picked up. */
   berserk?: boolean
+  /** Powerup countdowns in SECONDS; >0 ⇒ active. tickPlayerTimers decays them. */
+  invulnTimer: number
+  radSuitTimer: number
+  lightAmpTimer: number
+  blurTimer: number
+  /** Computer-area-map flag (level-scoped; no automap exists yet). */
+  allMapRevealed: boolean
+  /** Backpack claimed: maxAmmo already doubled, later backpacks only top up clips. */
+  hasBackpack: boolean
   weaponState: WeaponState
   weaponTimer: number // seconds left in the current weapon-state phase
   weaponFrame: number // index into the firing animation

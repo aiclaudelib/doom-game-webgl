@@ -22,6 +22,7 @@ import type {
   Player,
   Projectile,
   ProjectileImpact,
+  Prop,
   Rng,
   SceneQuery,
   Settings,
@@ -44,12 +45,14 @@ import {
 } from '~/doom/game/player'
 import type { SpriteAtlas } from '~/doom/engine/sprites/spriteAtlas'
 import { spriteRotation } from '~/doom/engine/sprites/spriteAtlas'
+import { PICKUP_SPRITE } from '~/doom/game/pickupSprites'
 import { ACTOR_DEFS, resolveActorFrame } from '~/doom/game/actorDefs'
 import type { ActorPhase } from '~/doom/game/actorDefs'
 import { damageEnemy, enemyDef, enemyFrame, spawnEnemy, updateEnemy } from '~/doom/game/enemy'
 import { PROJECTILE_DEFS, projectileFrame, updateProjectile } from '~/doom/game/projectile'
 import { tryFire, updateWeapon, weaponBySlot, weaponDef } from '~/doom/game/weapon'
 import { applyPickup, spawnPickup } from '~/doom/game/pickup'
+import { PROP_DEFS, propFrameLetter, spawnProp, updateProp } from '~/doom/game/prop'
 
 /** Door motion phase: shut, sliding open, held fully open, or sliding closed. */
 type DoorPhase = 'shut' | 'opening' | 'open' | 'closing'
@@ -62,6 +65,12 @@ const PROJECTILE_Z_OFFSET = 0.4
 const FLYING_Z_OFFSET = 0.6
 /** Fallback billboard scale for any pickup. */
 const PICKUP_SCALE = 0.55
+/** Pickup float: base lift (cells) + bob amplitude, advanced by a per-world clock. */
+const PICKUP_BOB = 0.18
+const PICKUP_BOB_AMP = 0.06
+
+/** Ceiling-anchored props (hanging victims) hang this many cells below the ceiling. */
+const CEILING_PROP_Z_OFFSET = 1.2
 
 /** Player collision radius (cells) used as the splash target radius for the player. */
 const PLAYER_SPLASH_RADIUS = 0.22
@@ -105,6 +114,9 @@ export class World implements SceneQuery {
   private readonly enemies: Enemy[] = []
   private readonly projectiles: Projectile[] = []
   private readonly pickups: Pickup[] = []
+  private readonly props: Prop[] = []
+  /** Indices into `enemies` of barrels that have already detonated (no re-chaining). */
+  private readonly detonated = new Set<number>()
 
   /** Per-cell door openness 0 (shut) .. 1 (fully open), keyed by cellIndex. */
   private readonly doorOpenness: Float32Array
@@ -116,6 +128,8 @@ export class World implements SceneQuery {
   private kills = 0
   private readonly totalEnemies: number
   private exited = false
+  /** Free-running clock (seconds) driving the cosmetic pickup bob. */
+  private bobClock = 0
 
   /** Authentic sprite atlas, swapped in once loaded; null = procedural fallback. */
   private spriteAtlas: SpriteAtlas | null = null
@@ -143,10 +157,15 @@ export class World implements SceneQuery {
     for (const spawn of level.enemySpawns) {
       this.enemies.push(spawnEnemy(spawn.kind, spawn.x, spawn.y))
     }
-    this.totalEnemies = this.enemies.length
+    // Barrels are decor, not monsters — exclude them from the kill total (§5A/5B).
+    this.totalEnemies = this.enemies.filter(e => e.kind !== 'barrel').length
 
     for (const spawn of level.pickupSpawns) {
       this.pickups.push(spawnPickup(spawn.kind, spawn.x, spawn.y))
+    }
+
+    for (const spawn of level.propSpawns) {
+      this.props.push(spawnProp(spawn.kind, spawn.x, spawn.y))
     }
   }
 
@@ -213,11 +232,22 @@ export class World implements SceneQuery {
     return { kills: this.kills, totalEnemies: this.totalEnemies, level: this.name }
   }
 
+  /** Read-only snapshot of every entity's kind + live state (for tests / debug HUD). */
+  get enemyStates(): readonly { kind: Enemy['kind']; state: Enemy['state'] }[] {
+    return this.enemies.map(e => ({ kind: e.kind, state: e.state }))
+  }
+
+  /** Read-only snapshot of every prop's kind + anim clock (for tests / debug HUD). */
+  get propStates(): readonly { kind: Prop['kind']; animTimer: number }[] {
+    return this.props.map(p => ({ kind: p.kind, animTimer: p.animTimer }))
+  }
+
   // ── Simulation tick ─────────────────────────────────────────────────────────
 
   update(input: InputFrame, dt: number): WorldEvents {
     const player = this._player
     const healthBefore = player.health
+    this.bobClock += dt
 
     // 1. Player movement (turn + collide-and-slide) using the live Settings so
     //    mouse sensitivity + mouse-look toggles take effect immediately.
@@ -231,15 +261,29 @@ export class World implements SceneQuery {
     const fired = weaponPhase.fired
     const dryFired = weaponPhase.dryFired
 
-    // 4. Enemies — count freshly finished deaths into kills.
+    // 4. Enemies — count freshly finished deaths into kills (barrels are decor: they
+    //    never count, but a barrel that just started dying detonates a radius blast).
     let enemyHurt = false
     let enemyDied = false
-    for (const enemy of this.enemies) {
+    for (let i = 0; i < this.enemies.length; i++) {
+      const enemy = this.enemies[i]
+      if (enemy === undefined) {
+        continue
+      }
       const aliveBefore = enemy.alive
       const stateBefore = enemy.state
       updateEnemy(enemy, player, this, this.projectiles, this.rng, dt)
       if (enemy.state === 'hurt' && stateBefore !== 'hurt') {
         enemyHurt = true
+      }
+      if (enemy.kind === 'barrel') {
+        // Detonate the first frame a barrel is dying/dead and hasn't blown yet. The
+        // `detonated` set makes this idempotent so a chain (splash → other barrels
+        // start dying) can't re-detonate the same barrel or loop forever.
+        if ((enemy.state === 'dying' || enemy.state === 'dead') && !this.detonated.has(i)) {
+          this.detonateBarrel(i)
+        }
+        continue
       }
       if (aliveBefore && !enemy.alive) {
         this.kills++
@@ -256,6 +300,11 @@ export class World implements SceneQuery {
       }
     }
     pruneDead(this.projectiles)
+
+    // 5b. Props — advance each decoration's animation clock (render-only).
+    for (const prop of this.props) {
+      updateProp(prop, dt)
+    }
 
     // 6. Doors — animate openness, auto-close after the hold (never onto an entity).
     this.animateDoors(dt)
@@ -309,6 +358,21 @@ export class World implements SceneQuery {
     if (pdef.bfgSpray === true) {
       this.fireBfgSpray(proj)
     }
+  }
+
+  /**
+   * Detonate barrel `index`: mark it spent (so it never re-chains) then apply the
+   * same 128u Chebyshev splash a rocket uses, centred on the barrel. The blast
+   * damages monsters, the player AND other barrels (each newly-dying barrel is
+   * detonated by the update loop in turn → chain detonation), all LOS-gated.
+   */
+  private detonateBarrel(index: number): void {
+    this.detonated.add(index)
+    const barrel = this.enemies[index]
+    if (barrel === undefined) {
+      return
+    }
+    this.applySplash({ x: barrel.pos.x, y: barrel.pos.y }, this.rng)
   }
 
   /**
@@ -579,19 +643,23 @@ export class World implements SceneQuery {
     const sprites: SpriteInstance[] = []
 
     for (const enemy of this.enemies) {
+      if (enemy.kind === 'barrel') {
+        // Barrels are special: dead ⇒ no corpse (skip). Alive/idle ⇒ BAR1; dying ⇒
+        // the BEXP blast frames (fullbright). The atlas path falls back to the
+        // procedural barrel-ish billboard so headless still renders something.
+        if (enemy.state === 'dead') {
+          continue
+        }
+        const barrelSprite = this.atlasBarrelSprite(enemy)
+        sprites.push(barrelSprite ?? this.proceduralEnemySprite(enemy))
+        continue
+      }
       const atlasSprite = this.atlasEnemySprite(enemy)
       if (atlasSprite !== null) {
         sprites.push(atlasSprite)
         continue
       }
-      // Procedural fallback: bottom-centre billboard from the generated textures.
-      const fbDef = enemyDef(enemy.kind)
-      sprites.push({
-        texture: enemyFrame(enemy, this.assets),
-        pos: { x: enemy.pos.x, y: enemy.pos.y },
-        scale: fbDef.scale,
-        ...(fbDef.flying === true ? { zOffset: FLYING_Z_OFFSET } : {}),
-      })
+      sprites.push(this.proceduralEnemySprite(enemy))
     }
 
     for (const proj of this.projectiles) {
@@ -616,14 +684,115 @@ export class World implements SceneQuery {
       if (!pickup.active) {
         continue
       }
+      const atlasSprite = this.atlasPickupSprite(pickup)
+      if (atlasSprite !== null) {
+        sprites.push(atlasSprite)
+        continue
+      }
+      // Procedural fallback: bottom-centre billboard from the generated icon.
       sprites.push({
         texture: pickupTexture(this.assets, pickup),
         pos: { x: pickup.pos.x, y: pickup.pos.y },
         scale: PICKUP_SCALE,
+        zOffset: this.pickupBob(pickup),
       })
     }
 
+    // Decor props render only when an atlas is loaded — there is no procedural prop
+    // art, so headless / procedural runs simply omit them (decor is optional).
+    for (const prop of this.props) {
+      const propSprite = this.atlasPropSprite(prop)
+      if (propSprite !== null) {
+        sprites.push(propSprite)
+      }
+    }
+
     return sprites
+  }
+
+  /** Procedural bottom-centre billboard for an enemy from the generated textures. */
+  private proceduralEnemySprite(enemy: Enemy): SpriteInstance {
+    const fbDef = enemyDef(enemy.kind)
+    return {
+      texture: enemyFrame(enemy, this.assets),
+      pos: { x: enemy.pos.x, y: enemy.pos.y },
+      scale: fbDef.scale,
+      ...(fbDef.flying === true ? { zOffset: FLYING_Z_OFFSET } : {}),
+    }
+  }
+
+  /**
+   * Build the atlas billboard for a prop, or null when no atlas / actor / frame is
+   * available (procedural runs then skip the prop). Ceiling-anchored props (hanging
+   * victims) get a zOffset pinning them near the ceiling; animated props pick their
+   * letter off the 35Hz anim clock via prop.propFrameLetter.
+   */
+  private atlasPropSprite(prop: Prop): SpriteInstance | null {
+    const atlas = this.spriteAtlas
+    if (atlas === null) {
+      return null
+    }
+    const def = PROP_DEFS[prop.kind]
+    if (!atlas.hasActor(def.sprite)) {
+      return null
+    }
+    const ref = atlas.actorFrame(def.sprite, propFrameLetter(prop), 1)
+    if (ref === null) {
+      return null
+    }
+    return offsetSprite(ref, prop.pos, def.ceiling === true ? CEILING_PROP_Z_OFFSET : undefined)
+  }
+
+  /**
+   * Build the atlas billboard for a barrel: BAR1 'A'/'B' (slow 2-frame idle clock)
+   * while alive, or the BEXP blast frames while dying (FULLBRIGHT, by death progress).
+   * Returns null when no atlas / frame so the caller falls back to the procedural art.
+   */
+  private atlasBarrelSprite(barrel: Enemy): SpriteInstance | null {
+    const atlas = this.spriteAtlas
+    if (atlas === null) {
+      return null
+    }
+    const dying = barrel.state === 'dying'
+    const sprite = dying ? 'BEXP' : 'BAR1'
+    if (!atlas.hasActor(sprite)) {
+      return null
+    }
+    const letter = dying
+      ? barrelExplosionLetter(barrel.animTimer)
+      : barrelIdleLetter(barrel.animTimer)
+    const ref = atlas.actorFrame(sprite, letter, 1)
+    if (ref === null) {
+      return null
+    }
+    return offsetSprite(ref, barrel.pos, undefined)
+  }
+
+  /**
+   * Build the atlas billboard for a pickup (its 'A' frame, single rotation), or null
+   * when no atlas / actor / frame is available so the caller falls back to the
+   * procedural icon. A gentle vertical bob keyed off position keeps items lively.
+   */
+  private atlasPickupSprite(pickup: Pickup): SpriteInstance | null {
+    const atlas = this.spriteAtlas
+    if (atlas === null) {
+      return null
+    }
+    const sprite = PICKUP_SPRITE[pickup.kind]
+    if (!atlas.hasActor(sprite)) {
+      return null
+    }
+    const ref = atlas.actorFrame(sprite, 'A', 1)
+    if (ref === null) {
+      return null
+    }
+    return offsetSprite(ref, pickup.pos, this.pickupBob(pickup))
+  }
+
+  /** Small deterministic vertical bob (cells) so pickups gently float in place. */
+  private pickupBob(pickup: Pickup): number {
+    const phase = (pickup.pos.x + pickup.pos.y) * 1.3 + this.bobClock
+    return PICKUP_BOB + Math.sin(phase) * PICKUP_BOB_AMP
   }
 
   /**
@@ -731,6 +900,21 @@ function attackPhase(enemy: Enemy): ActorPhase {
   }
   // hitscan / projectile: prefer the missile pose, else the melee pose.
   return ACTOR_DEFS[enemy.kind].states.missile !== undefined ? 'missile' : 'melee'
+}
+
+/** Barrel idle: BAR1 toggles A/B on a slow ~2.4 Hz clock (Doom's 6-tic cadence). */
+function barrelIdleLetter(animTimer: number): string {
+  return Math.floor(animTimer / 0.17) % 2 === 0 ? 'A' : 'B'
+}
+
+/**
+ * Barrel explosion: BEXP A→B→C→D→E across the ~0.6 s dying window. animTimer is reset
+ * to 0 when dying begins (damageEnemy), so the blast marches forward from frame A.
+ */
+const BEXP_LETTERS = 'ABCDE'
+function barrelExplosionLetter(animTimer: number): string {
+  const idx = Math.min(BEXP_LETTERS.length - 1, Math.floor(animTimer / 0.12))
+  return BEXP_LETTERS[idx] ?? 'A'
 }
 
 /** Drop the dead projectiles, compacting in place to keep the array tight. */

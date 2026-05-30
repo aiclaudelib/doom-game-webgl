@@ -37,6 +37,11 @@ const WALK_FRAME_TIME = 0.18
 const AIM_JITTER = 0.06
 /** Mancubus FATSPREAD: ANG90/8 = 11.25° between fan shots. */
 const FAT_SPREAD = Math.PI / 2 / 8
+/** Blur (partial invisibility) aim penalty vs the player: hitscan ~±0.4 rad, projectile ~±0.2 rad. */
+const BLUR_HITSCAN_OFFSET = 0.4
+const BLUR_PROJECTILE_OFFSET = 0.2
+/** A hitscan bullet whips wide of the player when its blur offset exceeds this. */
+const BLUR_HITSCAN_MISS = 0.22
 
 /**
  * Which typed missile each projectile monster fires (doomBehaviorSpec.md §3.3):
@@ -281,6 +286,24 @@ export const ENEMY_DEFS: Readonly<Record<EnemyKind, EnemyDef>> = {
     meleeRange: 3.0,
     projectileSpeed: 5.47,
   },
+  // Explosive barrel (MT_BARREL, doomBehaviorSpec.md §3.5): HP 20, radius 10u≈0.16,
+  // archetype 'inert' (never moves/attacks), painChance 0 (never flinches). The world
+  // detonates it on death (BEXP anim → applySplash) and excludes it from the kill count.
+  barrel: {
+    kind: 'barrel',
+    maxHealth: 20,
+    speed: 0,
+    radius: 0.16,
+    attackRange: 0,
+    attackCooldown: 1,
+    painChance: 0,
+    scale: 1,
+    archetype: 'inert',
+    ranged: false,
+    damageSides: 1,
+    damageMul: 1,
+    attackShots: 0,
+  },
 }
 
 /** Lookup the static tuning table for a kind. */
@@ -364,6 +387,12 @@ export function updateEnemy(
     }
     // Keep facing the player through the swing so projectiles aim true.
     facePlayer(enemy, player.pos)
+    return
+  }
+
+  // Inert actors (the explosive barrel) never chase, face or attack — they only
+  // tick the hurt/dying/dead timers handled above, plus the animation clock.
+  if (enemyDef(enemy.kind).archetype === 'inert') {
     return
   }
 
@@ -488,7 +517,7 @@ function attack(
       hitscanAttack(enemy, player, scene, def, rng)
       return
     case 'projectile':
-      projectileAttack(enemy, projectiles, def, rng)
+      projectileAttack(enemy, player, projectiles, def, rng)
       return
     case 'charger':
       beginCharge(enemy, player, def)
@@ -504,6 +533,8 @@ function attack(
 /**
  * Hitscan: Doom hitscan is reliable, so on a clear line of sight every bullet
  * lands. attackShots bullets (zombieman 1, shotgun guy 3) each roll the dice.
+ * Against a blurred player (partial invisibility) each bullet rolls a wide aim
+ * offset and whips clean past when it exceeds the miss threshold (§3.4 PINS).
  */
 function hitscanAttack(
   enemy: Enemy,
@@ -515,7 +546,14 @@ function hitscanAttack(
   if (!lineOfSight(scene, enemy.pos, player.pos)) {
     return
   }
+  const blurred = player.blurTimer > 0
   for (let i = 0; i < def.attackShots; i++) {
+    if (
+      blurred &&
+      Math.abs(randRange(rng, -BLUR_HITSCAN_OFFSET, BLUR_HITSCAN_OFFSET)) > BLUR_HITSCAN_MISS
+    ) {
+      continue // aim thrown wide by the blur
+    }
     damagePlayer(player, rollDamage(rng, def.damageSides, def.damageMul))
   }
 }
@@ -527,15 +565,26 @@ function hitscanAttack(
  * own base (1+floor(rng*8))*base and the missile carries its canonical speed; the
  * revenant's tracer is homing (set on spawn from PROJECTILE_DEFS).
  */
-function projectileAttack(enemy: Enemy, projectiles: Projectile[], def: EnemyDef, rng: Rng): void {
+function projectileAttack(
+  enemy: Enemy,
+  player: Player,
+  projectiles: Projectile[],
+  def: EnemyDef,
+  rng: Rng,
+): void {
   const kind = ENEMY_PROJECTILE[enemy.kind] ?? 'fireball'
   const pdef = PROJECTILE_DEFS[kind]
   const speed = def.projectileSpeed ?? pdef.speed
   const shots = def.attackShots
+  // Blur throws the aim off (smaller penalty than hitscan); homing tracers ignore it (§3.4).
+  const blur =
+    player.blurTimer > 0 && pdef.homing !== true
+      ? randRange(rng, -BLUR_PROJECTILE_OFFSET, BLUR_PROJECTILE_OFFSET)
+      : 0
   for (let i = 0; i < shots; i++) {
     const spread =
       shots > 1 ? (i - (shots - 1) / 2) * FAT_SPREAD : randRange(rng, -AIM_JITTER, AIM_JITTER)
-    const dir = fromAngle(enemy.angle + spread)
+    const dir = fromAngle(enemy.angle + spread + blur)
     const dmg = (1 + Math.floor(rng() * 8)) * pdef.base
     projectiles.push(spawnProjectile(kind, enemy.pos, dir, dmg, true, speed))
   }

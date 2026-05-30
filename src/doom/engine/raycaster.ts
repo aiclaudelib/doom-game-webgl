@@ -19,6 +19,7 @@ const VIEW_CLEAR: Rgb = [16, 16, 20]
 /**
  * Renders floor + ceiling (floorcast) then distance-shaded textured walls into the
  * viewport [0,VIEW_W)×[0,VIEW_H). The status bar below VIEW_H is left untouched.
+ * `fullBright` (Light Amplification Visor) forces shading to intensity 1 everywhere.
  */
 export function renderWorld(
   fb: Framebuffer,
@@ -26,6 +27,7 @@ export function renderWorld(
   camera: Camera,
   assets: Assets,
   depth: DepthBuffer,
+  fullBright = false,
 ): void {
   const dir = fromAngle(camera.angle)
   const plane = rotate(dir, Math.PI / 2)
@@ -37,8 +39,13 @@ export function renderWorld(
   // (e.g. the top ceiling row) never leak a stale 1px line from the previous frame.
   fillRect(fb, 0, 0, VIEW_W, VIEW_H, VIEW_CLEAR)
 
-  renderFlats(fb, scene, camera, assets, dir, planeX, planeY, horizon)
-  renderWalls(fb, scene, camera, assets, depth, dir, planeX, planeY)
+  renderFlats(fb, scene, camera, assets, dir, planeX, planeY, horizon, fullBright)
+  renderWalls(fb, scene, camera, assets, depth, dir, planeX, planeY, fullBright)
+}
+
+/** Distance shading, short-circuited to 1 (full bright) under the light visor. */
+function shadeAt(distance: number, fullBright: boolean): number {
+  return fullBright ? 1 : fogIntensity(distance)
 }
 
 /**
@@ -54,6 +61,7 @@ function renderFlats(
   planeX: number,
   planeY: number,
   horizon: number,
+  fullBright: boolean,
 ): void {
   const floorTex = pickFlat(assets, scene.floorFlat)
   const ceilTex = pickFlat(assets, scene.ceilingFlat)
@@ -75,7 +83,7 @@ function renderFlats(
       continue
     }
     const rowDistance = horizon / p
-    const intensity = fogIntensity(rowDistance)
+    const intensity = shadeAt(rowDistance, fullBright)
 
     // World step per screen column at this row, plus the leftmost world position.
     const stepX = (rowDistance * (rayDirX1 - rayDirX0)) / VIEW_W
@@ -116,6 +124,7 @@ function renderWalls(
   dir: { x: number; y: number },
   planeX: number,
   planeY: number,
+  fullBright: boolean,
 ): void {
   const posX = camera.pos.x
   const posY = camera.pos.y
@@ -205,7 +214,7 @@ function renderWalls(
     }
     texX = clampTexel(texX)
 
-    const intensity = fogIntensity(safeDist) * (side === 1 ? Y_SIDE_SHADE : 1)
+    const intensity = shadeAt(safeDist, fullBright) * (side === 1 ? Y_SIDE_SHADE : 1)
     const tex = pickWall(assets, wallTex)
 
     // Door slides UP into the ceiling: as openness grows the visible slice retracts
